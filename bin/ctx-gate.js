@@ -275,6 +275,7 @@ async function main(argv) {
       const write = rest.includes('--write');
       const result = await optimize(repoRoot, { write });
 
+      process.stdout.write(`ctx-gate: efficiency block — ${result.efficiencyBlockTokens} tokens (measured)\n`);
       for (const d of result.diffs) {
         if (!d.changed) {
           process.stdout.write(`ctx-gate: ${d.path} — no change\n`);

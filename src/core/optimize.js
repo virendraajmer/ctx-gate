@@ -12,7 +12,8 @@ const yaml = require('js-yaml');
 const { createTwoFilesPatch } = require('diff');
 
 const { sniffErrorHandling } = require('./standingSniffers');
-const { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, checkBudget } = require('../tokenBudget');
+const { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, checkBudget, countTokens } = require('../tokenBudget');
+const { resolveTestCommand, buildEfficiencyBlock } = require('./efficiencyBlock');
 
 class BudgetExceededError extends Error {
   constructor(fileLabel, count, limit) {
@@ -175,7 +176,12 @@ function scanForOptimizer(repoRoot, manifest) {
       ? `This repo uses ${stacksPresent.join(', ')}. Content below was generated from real detected facts (manifest.json) and a static scan — every claim cites its evidence path.`
       : `No supported stack was detected in this repo. This file will be regenerated once a stack is detected.`;
 
-  return { stacksPresent, summary, alwaysTrue, instructionsGroups, skillGroups };
+  const efficiencyBlock = buildEfficiencyBlock({
+    testCommand: resolveTestCommand(stacks),
+    stacksPresent,
+  });
+
+  return { stacksPresent, summary, efficiencyBlock, alwaysTrue, instructionsGroups, skillGroups };
 }
 
 function formatEvidence(evidence) {
@@ -190,7 +196,7 @@ function formatEvidence(evidence) {
  */
 function renderAgentsMd(facts, opts = {}) {
   const bullets = opts.maxBullets != null ? facts.alwaysTrue.slice(0, opts.maxBullets) : facts.alwaysTrue;
-  const lines = ['# AGENTS.md', '', facts.summary, ''];
+  const lines = ['# AGENTS.md', '', facts.summary, '', facts.efficiencyBlock, ''];
 
   if (bullets.length > 0) {
     lines.push('## Always true', '');
@@ -305,6 +311,7 @@ function budgetedAgentsMd(facts) {
 
   // One split attempt: progressively drop always-true bullets (their
   // detail already lives in the instructions/skill files routed to below).
+  // The fixed efficiency block is never trimmed to make room.
   while (bulletCount > 0 && !result.ok) {
     bulletCount -= 1;
     content = renderAgentsMd(facts, { maxBullets: bulletCount });
@@ -350,6 +357,7 @@ async function optimize(repoRoot, opts = {}) {
   const agentsMd = budgetedAgentsMd(facts);
   const instructionsFiles = budgetedInstructionsFiles(facts);
   const skillFiles = budgetedSkillFiles(facts);
+  const efficiencyBlockTokens = countTokens(facts.efficiencyBlock);
 
   const diffs = [];
 
@@ -383,7 +391,7 @@ async function optimize(repoRoot, opts = {}) {
     }
   }
 
-  return { agentsMd, instructionsFiles, skillFiles, diffs };
+  return { agentsMd, instructionsFiles, skillFiles, diffs, efficiencyBlockTokens };
 }
 
 module.exports = {

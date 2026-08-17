@@ -17,7 +17,8 @@ const {
   diffAgainstExisting,
   optimize,
 } = require('../../src/core/optimize');
-const { checkBudget, AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET } = require('../../src/tokenBudget');
+const { checkBudget, countTokens, AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET } = require('../../src/tokenBudget');
+const { buildEfficiencyBlock } = require('../../src/core/efficiencyBlock');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
 
@@ -60,6 +61,7 @@ function assertNoLineNumberCitations(text) {
 const sampleFacts = {
   stacksPresent: ['node', 'react'],
   summary: 'This repo uses node, react.',
+  efficiencyBlock: buildEfficiencyBlock({ testCommand: 'vitest', stacksPresent: ['node', 'react'] }),
   alwaysTrue: [{ claim: 'Tests run via `vitest`', evidence: { path: 'package.json', symbol: 'scripts.test' } }],
   instructionsGroups: [
     {
@@ -86,6 +88,21 @@ test('renderAgentsMd includes the summary, always-true bullets with evidence, an
   assert.match(md, /react-screens\.instructions\.md/);
   assert.match(md, /adding-a-screen\/SKILL\.md/);
   assertNoLineNumberCitations(md);
+});
+
+test('renderAgentsMd places the fixed efficiency block after the summary and before the routing list', () => {
+  const md = renderAgentsMd(sampleFacts);
+  const summaryIdx = md.indexOf('This repo uses node, react.');
+  const blockIdx = md.indexOf('## Running commands');
+  const alwaysTrueIdx = md.indexOf('## Always true');
+  const routingIdx = md.indexOf('## Routing');
+  assert.ok(summaryIdx > -1 && blockIdx > -1 && alwaysTrueIdx > -1 && routingIdx > -1);
+  assert.ok(summaryIdx < blockIdx);
+  assert.ok(blockIdx < alwaysTrueIdx);
+  assert.ok(blockIdx < routingIdx);
+  assert.match(md, /## Reading files/);
+  assert.match(md, /## Editing files/);
+  assert.match(md, /## Response style/);
 });
 
 test('renderInstructionsFiles produces one file per group with applyTo frontmatter data', () => {
@@ -226,6 +243,57 @@ test('optimize on the python-fastapi fixture cites real endpoint paths, never a 
       const budget = checkBudget(file.body, INSTRUCTIONS_BUDGET);
       assert.equal(budget.ok, true);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('two consecutive optimize runs on an unchanged repo produce a byte-identical AGENTS.md', async () => {
+  const dir = copyFixture('node-react-basic');
+  try {
+    await init(dir, { streams: silentStreams() });
+    const first = await optimize(dir, { write: false });
+    const second = await optimize(dir, { write: false });
+    assert.equal(first.agentsMd, second.agentsMd);
+    assert.equal(Buffer.compare(Buffer.from(first.agentsMd, 'utf8'), Buffer.from(second.agentsMd, 'utf8')), 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('optimize reports the real measured token count of the efficiency block, and it is counted against the AGENTS.md budget', async () => {
+  const dir = copyFixture('node-react-basic');
+  try {
+    await init(dir, { streams: silentStreams() });
+    const result = await optimize(dir, { write: false });
+    assert.equal(typeof result.efficiencyBlockTokens, 'number');
+    assert.ok(result.efficiencyBlockTokens > 0);
+    assert.match(result.agentsMd, /## Running commands/);
+    assert.ok(countTokens(result.agentsMd) <= AGENTS_MD_BUDGET);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the efficiency block extends the baseline ignore list with .NET-specific paths, without dropping the baseline', async () => {
+  const dir = copyFixture('dotnet-basic');
+  try {
+    await init(dir, { streams: silentStreams() });
+    const result = await optimize(dir, { write: false });
+    assert.match(result.agentsMd, /Never read: node_modules\/, dist\/, build\/, \*\.lock, \*\.min\.js, generated\/, migrations\/, test fixtures, sample data, bin\/, obj\/, packages\/\./);
+    assert.match(result.agentsMd, /`dotnet test > \/tmp\/out\.log/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the efficiency block extends the baseline ignore list with Python-specific paths, without dropping the baseline', async () => {
+  const dir = copyFixture('python-fastapi-basic');
+  try {
+    await init(dir, { streams: silentStreams() });
+    const result = await optimize(dir, { write: false });
+    assert.match(result.agentsMd, /Never read: node_modules\/, dist\/, build\/, \*\.lock, \*\.min\.js, generated\/, migrations\/, test fixtures, sample data, __pycache__\/, \.venv\/, \*\.egg-info\/\./);
+    assert.match(result.agentsMd, /`pytest > \/tmp\/out\.log/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
