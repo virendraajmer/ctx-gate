@@ -14,6 +14,8 @@ const { createTwoFilesPatch } = require('diff');
 const { sniffErrorHandling } = require('./standingSniffers');
 const { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, checkBudget, countTokens } = require('../tokenBudget');
 const { resolveTestCommand, buildEfficiencyBlock } = require('./efficiencyBlock');
+const { MCP_GUIDANCE_BLOCK } = require('./mcpGuidance');
+const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
 
 class BudgetExceededError extends Error {
   constructor(fileLabel, count, limit) {
@@ -181,7 +183,9 @@ function scanForOptimizer(repoRoot, manifest) {
     stacksPresent,
   });
 
-  return { stacksPresent, summary, efficiencyBlock, alwaysTrue, instructionsGroups, skillGroups };
+  const mcpGuidanceBlock = codebaseMemoryClient.isAvailable() ? MCP_GUIDANCE_BLOCK : null;
+
+  return { stacksPresent, summary, efficiencyBlock, mcpGuidanceBlock, alwaysTrue, instructionsGroups, skillGroups };
 }
 
 function formatEvidence(evidence) {
@@ -197,6 +201,10 @@ function formatEvidence(evidence) {
 function renderAgentsMd(facts, opts = {}) {
   const bullets = opts.maxBullets != null ? facts.alwaysTrue.slice(0, opts.maxBullets) : facts.alwaysTrue;
   const lines = ['# AGENTS.md', '', facts.summary, '', facts.efficiencyBlock, ''];
+
+  if (facts.mcpGuidanceBlock) {
+    lines.push(facts.mcpGuidanceBlock, '');
+  }
 
   if (bullets.length > 0) {
     lines.push('## Always true', '');

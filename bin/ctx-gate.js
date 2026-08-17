@@ -91,7 +91,8 @@ async function main(argv) {
     case 'init': {
       const { init } = require('../src/core/init');
       const repoRoot = process.cwd();
-      const { manifest, standing, features, learned, mcpAvailable, mcpGuidance } = await init(repoRoot);
+      const { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath } =
+        await init(repoRoot, { ctxGateJsPath: __filename });
       process.stdout.write('ctx-gate: wrote .context-ops/manifest.json\n');
       process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
       process.stdout.write('ctx-gate: wrote .context-ops/memory/standing.yml\n');
@@ -100,8 +101,10 @@ async function main(argv) {
       process.stdout.write(`${JSON.stringify(features, null, 2)}\n`);
       process.stdout.write('ctx-gate: wrote .context-ops/memory/learned.yml\n');
       process.stdout.write(`${JSON.stringify(learned, null, 2)}\n`);
+      process.stdout.write(`ctx-gate: wrote ${path.relative(repoRoot, hooksPath).replace(/\\/g, '/')}\n`);
       if (mcpAvailable) {
-        process.stdout.write('ctx-gate: codebase-memory-mcp found on PATH.\n');
+        const mcpMessage = mcpIndexResult ? mcpIndexResult.message : 'index already built — background watcher keeps it fresh.';
+        process.stdout.write(`ctx-gate: codebase-memory-mcp found on PATH — ${mcpMessage}\n`);
       } else {
         process.stdout.write(`ctx-gate: ${mcpGuidance}\n`);
       }
@@ -299,6 +302,59 @@ async function main(argv) {
         }
       }
       process.stdout.write('Nothing was deleted — review and edit these files by hand.\n');
+      return;
+    }
+    case 'configure': {
+      const { listConfigurable, setStandingAnswer, setFeatureMapping } = require('../src/core/configure');
+      const repoRoot = process.cwd();
+
+      if (rest.length === 0) {
+        const { standing, features } = listConfigurable(repoRoot);
+        process.stdout.write('ctx-gate: configurable answers for this repo (.context-ops/memory/standing.yml)\n\n');
+        for (const row of standing) {
+          const value = row.value || '(blank)';
+          process.stdout.write(`  ${row.id.padEnd(22)} ${value.padEnd(35)} [${row.status}]\n`);
+        }
+        process.stdout.write('\nctx-gate: feature-word mappings (.context-ops/memory/features.yml)\n\n');
+        if (features.length === 0) {
+          process.stdout.write('  (none mapped)\n');
+        }
+        for (const row of features) {
+          process.stdout.write(`  ${row.word.padEnd(22)} ${row.paths.join(', ')}\n`);
+        }
+        process.stdout.write('\nUsage: ctx-gate configure <id> <value>\n');
+        process.stdout.write('       ctx-gate configure feature <word> <path>\n');
+        process.stdout.write('Example: ctx-gate configure logging-convention "use pino, one JSON line per request"\n');
+        process.stdout.write('Example: ctx-gate configure feature sorting src/utils/sort.js\n');
+        return;
+      }
+
+      if (rest[0] === 'feature') {
+        const [, word, folderPath] = rest;
+        if (!word || !folderPath) {
+          process.stderr.write('Usage: ctx-gate configure feature <word> <path>\n');
+          process.exitCode = 1;
+          return;
+        }
+        const mapping = setFeatureMapping(repoRoot, word, folderPath);
+        process.stdout.write(`ctx-gate: mapped "${mapping.word}" -> ${mapping.paths.join(', ')}\n`);
+        return;
+      }
+
+      const [id, ...valueParts] = rest;
+      const value = valueParts.join(' ');
+      if (!value) {
+        process.stderr.write('Usage: ctx-gate configure <id> <value>\nRun `ctx-gate configure` with no arguments to see valid ids.\n');
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const entry = setStandingAnswer(repoRoot, id, value);
+        process.stdout.write(`ctx-gate: set "${entry.id}" -> ${entry.value}\n`);
+      } catch (err) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+      }
       return;
     }
     case 'enforce': {

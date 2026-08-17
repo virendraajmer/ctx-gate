@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const { Readable, Writable } = require('node:stream');
 
 const { init } = require('../src/core/init');
+const { fakeMcpClient } = require('./helpers/fakeMcpClient');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -45,7 +46,7 @@ test(
       // `ctx-gate init` call hits the idempotent no-prompt path — avoids
       // the known readline burst-consumption issue with piped/closed
       // stdin three processes deep (bash test runner -> powershell.exe -> node).
-      await init(targetRepo, { streams: silentStreams() });
+      await init(targetRepo, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
       const standingBefore = fs.readFileSync(path.join(targetRepo, '.context-ops', 'memory', 'standing.yml'), 'utf8');
 
       const version = fs.readFileSync(path.join(REPO_ROOT, 'VERSION'), 'utf8').trim();

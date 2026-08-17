@@ -1,8 +1,10 @@
 # ctx-gate
 
-Company-wide context optimizer and zero-LLM requirement gate for AI
-coding agents (GitHub Copilot in VS Code today; designed to support
-other agent CLIs later — see [Architecture](#architecture)).
+[![npm version](https://img.shields.io/npm/v/ctx-gate.svg)](https://www.npmjs.com/package/ctx-gate)
+
+Context optimizer and zero-LLM requirement gate for AI coding agents
+(GitHub Copilot in VS Code today; designed to support other agent CLIs
+later — see [Architecture](#architecture)).
 
 ctx-gate has two capabilities in one tool:
 
@@ -26,14 +28,34 @@ repo's own team via git.
 
 ## Install
 
-**Windows (PowerShell):**
+**From npm (recommended):**
+
+```bash
+npm install -g ctx-gate
+cd path/to/your-repo
+ctx-gate init
+```
+
+Or without a global install, via `npx`:
+
+```bash
+cd path/to/your-repo
+npx ctx-gate init
+```
+
+`ctx-gate init` writes `.github/hooks/ctx-gate.json` itself (pointing at
+wherever `ctx-gate.js` actually is, so this works the same whether you
+installed globally via npm or via one of the scripts below) — the npm
+path above is self-sufficient on its own.
+
+**Version-pinned install with hooks wired up (Windows, PowerShell):**
 
 ```powershell
 cd path\to\your-repo
 & \path\to\ctx-gate\install.ps1
 ```
 
-**macOS/Linux/WSL2 (bash):**
+**Version-pinned install with hooks wired up (macOS/Linux/WSL2, bash):**
 
 ```bash
 cd path/to/your-repo
@@ -44,21 +66,88 @@ cd path/to/your-repo
 > Linux/macOS (this repo was built and tested on Windows) — verify it via
 > WSL2 or CI before relying on it in production.
 
-Both scripts: copy `ctx-gate` to a version-pinned location
+Both scripts expect a local clone of this repo (they copy `ctx-gate` from
+`path/to/ctx-gate`, not from the npm registry) to a version-pinned location
 (`~/.ctx-gate/<version>/` on macOS/Linux, `%USERPROFILE%\.ctx-gate\<version>\`
-on Windows), run `ctx-gate init` in the repo you ran the installer from,
-and write `.github/hooks/ctx-gate.json` pointing at the installed binary.
+on Windows), run `ctx-gate init` in the repo you ran the installer from, and
+re-point `.github/hooks/ctx-gate.json` at that version-pinned copy (`init`
+already wrote a working version of this file pointed at the copy the
+installer just made; the installer's own write is only there to be
+explicit about the version-pinned path and to keep the `~/.ctx-gate/current`
+symlink indirection meaningful for install.sh).
 
 ## Usage
 
 ### `ctx-gate init`
 
-Run once per repo (the installer does this for you). Detects your stack
-(Node/React, Python, .NET — a repo can match more than one), asks a
-handful of standing questions the detectors couldn't answer on their own
-(what does "done" mean here, which paths are high-risk, naming/logging
-conventions, etc.), and writes everything under `.context-ops/`. Safe to
-re-run — it never re-prompts for anything it already has an answer for.
+Run once per repo (the installer does this for you, or run it yourself
+after `npm install -g ctx-gate`). Detects your stack (Node/React, Python,
+.NET — a repo can match more than one), asks a handful of standing
+questions the detectors couldn't answer on their own (what does "done"
+mean here, which paths are high-risk, naming/logging conventions, etc.),
+writes everything under `.context-ops/`, and writes
+`.github/hooks/ctx-gate.json`. Safe to re-run — it never re-prompts for
+anything it already has an answer for, and re-running after an upgrade
+re-points the hooks file at the new install path.
+
+None of the standing questions are required to finish `init` — every one
+has a sensible default (shown in brackets; press Enter to accept it, or
+leave it blank), and one (`error-handling`) is skipped entirely when a
+sniffer already detects it from real code. They're pure enrichment: `check`
+uses whatever's answered to add optional context notes for the agent
+(e.g. a "high-risk path — review carefully" note), and a blank/default
+answer just means that note never fires — nothing about `init` completing
+or the gate working depends on them being filled in. Answer (or change)
+one later at any time with `ctx-gate configure`, without re-running `init`.
+
+If `codebase-memory-mcp` is already on PATH, a fresh `init` also builds its
+initial index for this repo (its own background watcher keeps it fresh
+after that — re-running `init` later doesn't rebuild it again). If it
+isn't on PATH, `init` prints manual install instructions and the command
+to index the repo yourself afterward — see
+[codebase-memory-mcp](#codebase-memory-mcp) below.
+
+### `ctx-gate configure [id] [value]`
+
+Manual command for answering (or re-answering) one of `init`'s standing
+questions later, or adding a feature-word mapping, without re-running
+`init` or hand-editing YAML.
+
+Run with no arguments to see what's configurable and its current value:
+
+```console
+$ ctx-gate configure
+ctx-gate: configurable answers for this repo (.context-ops/memory/standing.yml)
+
+  done-means             tests pass + CI green            [default]
+  high-risk-paths        (blank)                          [default]
+  error-handling         throws (Result/Either not seen)  [detected]
+  naming-convention      (blank)                          [default]
+  performance-target     not measured                     [default]
+  logging-convention     (blank)                          [default]
+
+ctx-gate: feature-word mappings (.context-ops/memory/features.yml)
+
+  (none mapped)
+
+Usage: ctx-gate configure <id> <value>
+       ctx-gate configure feature <word> <path>
+```
+
+Then set one:
+
+```bash
+ctx-gate configure logging-convention "use pino, one JSON line per request"
+ctx-gate configure feature sorting src/utils/sort.js
+```
+
+`ctx-gate configure <id> <value>` overwrites that standing.yml entry and
+marks it `confirmed` (works even for `error-handling` — a manual answer
+overrides the sniffer's guess). `ctx-gate configure feature <word> <path>`
+adds a folder mapping to features.yml, appending to an existing word rather
+than replacing it. Both are just YAML writes — `.context-ops/memory/standing.yml`
+and `features.yml` are plain, git-committed files, so hand-editing them
+works too; this command is just the friendlier path.
 
 ### `ctx-gate check` / `learn` / `enforce` (the Requirement Gate)
 
@@ -86,16 +175,21 @@ Scans the repo and prints a diff of what `AGENTS.md`, the
 `.github/skills/*/SKILL.md` files would become. Every claim in the
 generated content cites a real file (never a fabricated fact, never a
 line number, since those rot). Nothing is written unless you pass
-`--write`.
+`--write`. If `codebase-memory-mcp` is detected on PATH, the generated
+`AGENTS.md` also gets a fixed "Code search" block telling the agent to
+prefer its graph tools (`search_graph`, `trace_path`, `get_code_snippet`,
+`query_graph`, `get_architecture`) over grep or full-file reads for
+structural questions — omitted entirely when the binary isn't available.
 
 ### `ctx-gate mcp-check`
 
 ctx-gate can optionally use [`codebase-memory-mcp`](#codebase-memory-mcp)
 for smarter semantic search inside `check`. This binary is **never**
 installed automatically. `ctx-gate init` only prints manual install
-instructions if it isn't found. Once you've installed it yourself, run
-`ctx-gate mcp-check` to confirm it's detected and build its initial
-index — after that its background watcher keeps itself fresh.
+instructions if it isn't found, and only auto-builds the index on a
+genuinely fresh `init` if it is found. Run `ctx-gate mcp-check` any time
+afterward to confirm it's still detected or to force a rebuild — its
+background watcher otherwise keeps the index fresh on its own.
 
 ### `ctx-gate enforce <off|warn|block>`
 
@@ -175,11 +269,24 @@ production.
 ## codebase-memory-mcp
 
 An optional, separately-installed binary that gives `ctx-gate check`
-better semantic search over the codebase. ctx-gate never installs it for
-you, on any OS — see `SECURITY.md` for why, and run `ctx-gate mcp-check`
-after installing it yourself. Without it, `check` falls back to a plain
-substring search over `git ls-files` — less precise, but the gate works
-fully without this binary either way.
+better semantic search over the codebase, and — when detected — gets a
+routing block in the generated `AGENTS.md` telling coding agents to prefer
+its graph tools over grep/full-file reads for structural questions. ctx-gate
+never installs it for you, on any OS — see `SECURITY.md` for why.
+
+- **Not installed yet:** `ctx-gate init` prints manual install/approval
+  instructions (get it approved by internal security first — it reads full
+  repo contents, even though it stays local). Once installed, run
+  `ctx-gate mcp-check` to confirm it's detected and build its initial index.
+- **Already installed:** a genuinely fresh `ctx-gate init` builds the
+  initial index for you automatically; re-running `init` later doesn't
+  rebuild it again (its own background watcher keeps it current). Run
+  `ctx-gate mcp-check` any time to confirm it's still detected or force a
+  rebuild.
+
+Without it, `check` falls back to a plain substring search over
+`git ls-files` — less precise, but the gate works fully without this
+binary either way.
 
 ## Development
 

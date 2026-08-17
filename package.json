@@ -1,11 +1,21 @@
 {
   "name": "ctx-gate",
-  "version": "0.1.0",
-  "description": "Company-wide context optimizer and zero-LLM requirement gate for AI coding agents",
+  "version": "0.1.1",
+  "description": "Context optimizer and zero-LLM requirement gate for AI coding agents",
   "type": "commonjs",
   "bin": {
     "ctx-gate": "./bin/ctx-gate.js"
   },
+  "main": "src/core/optimize.js",
+  "files": [
+    "bin/",
+    "src/",
+    "hook-templates/",
+    "install.sh",
+    "install.ps1",
+    "LICENSE",
+    "SECURITY.md"
+  ],
   "engines": {
     "node": ">=18"
   },
@@ -17,5 +27,22 @@
     "diff": "^5.2.0",
     "js-yaml": "^4.1.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Virendra Singh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/virendraajmer/ctx-gate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/virendraajmer/ctx-gate/issues"
+  },
+  "homepage": "https://github.com/virendraajmer/ctx-gate#readme",
+  "keywords": [
+    "ai-agents",
+    "copilot",
+    "claude-code",
+    "context-engineering",
+    "agents-md",
+    "cli"
+  ]
 }

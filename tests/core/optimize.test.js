@@ -8,6 +8,7 @@ const path = require('node:path');
 const { Readable, Writable } = require('node:stream');
 
 const { init } = require('../../src/core/init');
+const { fakeMcpClient } = require('../helpers/fakeMcpClient');
 const {
   BudgetExceededError,
   scanForOptimizer,
@@ -192,7 +193,7 @@ test('optimize throws BudgetExceededError when an instructions file cannot fit e
 test('optimize on the node-react fixture produces an under-budget AGENTS.md with real path citations, writes nothing without --write', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const result = await optimize(dir, { write: false });
 
     const budget = checkBudget(result.agentsMd, AGENTS_MD_BUDGET);
@@ -216,7 +217,7 @@ test('optimize on the node-react fixture produces an under-budget AGENTS.md with
 test('optimize --write actually writes files, and a second run is idempotent (no further diff)', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     await optimize(dir, { write: true });
 
     assert.equal(fs.existsSync(path.join(dir, 'AGENTS.md')), true);
@@ -231,7 +232,7 @@ test('optimize --write actually writes files, and a second run is idempotent (no
 test('optimize on the python-fastapi fixture cites real endpoint paths, never a line number', async () => {
   const dir = copyFixture('python-fastapi-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const result = await optimize(dir, { write: false });
 
     const apiInstructions = result.instructionsFiles.find((f) => f.filename === 'api-endpoints.instructions.md');
@@ -251,7 +252,7 @@ test('optimize on the python-fastapi fixture cites real endpoint paths, never a 
 test('two consecutive optimize runs on an unchanged repo produce a byte-identical AGENTS.md', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const first = await optimize(dir, { write: false });
     const second = await optimize(dir, { write: false });
     assert.equal(first.agentsMd, second.agentsMd);
@@ -264,7 +265,7 @@ test('two consecutive optimize runs on an unchanged repo produce a byte-identica
 test('optimize reports the real measured token count of the efficiency block, and it is counted against the AGENTS.md budget', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const result = await optimize(dir, { write: false });
     assert.equal(typeof result.efficiencyBlockTokens, 'number');
     assert.ok(result.efficiencyBlockTokens > 0);
@@ -278,7 +279,7 @@ test('optimize reports the real measured token count of the efficiency block, an
 test('the efficiency block extends the baseline ignore list with .NET-specific paths, without dropping the baseline', async () => {
   const dir = copyFixture('dotnet-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const result = await optimize(dir, { write: false });
     assert.match(result.agentsMd, /Never read: node_modules\/, dist\/, build\/, \*\.lock, \*\.min\.js, generated\/, migrations\/, test fixtures, sample data, bin\/, obj\/, packages\/\./);
     assert.match(result.agentsMd, /`dotnet test > \/tmp\/out\.log/);
@@ -290,7 +291,7 @@ test('the efficiency block extends the baseline ignore list with .NET-specific p
 test('the efficiency block extends the baseline ignore list with Python-specific paths, without dropping the baseline', async () => {
   const dir = copyFixture('python-fastapi-basic');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const result = await optimize(dir, { write: false });
     assert.match(result.agentsMd, /Never read: node_modules\/, dist\/, build\/, \*\.lock, \*\.min\.js, generated\/, migrations\/, test fixtures, sample data, __pycache__\/, \.venv\/, \*\.egg-info\/\./);
     assert.match(result.agentsMd, /`pytest > \/tmp\/out\.log/);
@@ -302,7 +303,7 @@ test('the efficiency block extends the baseline ignore list with Python-specific
 test('scanForOptimizer never fabricates a claim it has no evidence for (empty repo)', async () => {
   const dir = copyFixture('empty-repo');
   try {
-    await init(dir, { streams: silentStreams() });
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     const facts = scanForOptimizer(dir, { stacks: {}, endpoints: [] });
     assert.deepEqual(facts.alwaysTrue, []);
     assert.deepEqual(facts.instructionsGroups, []);

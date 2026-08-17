@@ -5,6 +5,7 @@
 // .context-ops/ scaffolding into the target repo. See Phase 1-3 of the
 // build plan.
 
+const path = require('path');
 const { detectNode } = require('../detectors/node');
 const { detectReact } = require('../detectors/react');
 const { detectPython } = require('../detectors/python');
@@ -13,13 +14,21 @@ const { emptyManifest, emptyStanding, emptyFeatures, emptyLearned, defaultTeamCo
 const { buildStandingEntries, buildFeatureMappings } = require('./standingQuestions');
 const store = require('../memory/store');
 const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
+const { writeHooksFile } = require('./hooks');
+
+const DEFAULT_CTX_GATE_JS_PATH = require.resolve(path.join('..', '..', 'bin', 'ctx-gate.js'));
 
 /**
  * @param {string} repoRoot
  * @param {Object} [opts]
  * @param {{ input?: NodeJS.ReadableStream, output?: NodeJS.WritableStream }} [opts.streams]
  *   readline streams for the standing questions — defaults to process.stdin/stdout.
- * @returns {Promise<{ manifest: Object, standing: Object, features: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null }>}
+ * @param {string} [opts.ctxGateJsPath] - absolute path to the running bin/ctx-gate.js,
+ *   embedded into the hooks file written to the target repo. Defaults to this
+ *   package's own bin/ctx-gate.js (correct for both a global npm install and a
+ *   version-pinned copy made by install.ps1/install.sh, since each runs its own
+ *   physical bin/ctx-gate.js).
+ * @returns {Promise<{ manifest: Object, standing: Object, features: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null, mcpIndexResult: {success: boolean, message: string}|null, hooksPath: string }>}
  */
 async function init(repoRoot, opts = {}) {
   const manifest = emptyManifest();
@@ -51,6 +60,7 @@ async function init(repoRoot, opts = {}) {
   store.writeManifest(repoRoot, manifest);
 
   let standing = store.readStanding(repoRoot);
+  const isFreshInit = !standing;
   if (!standing) {
     standing = emptyStanding();
     standing.entries = await buildStandingEntries(repoRoot, opts.streams);
@@ -86,8 +96,17 @@ async function init(repoRoot, opts = {}) {
 
   const mcpAvailable = codebaseMemoryClient.isAvailable();
   const mcpGuidance = mcpAvailable ? null : codebaseMemoryClient.guidanceText();
+  // Only auto-build the index on a genuinely fresh init -- after that the
+  // binary's own background watcher keeps it current, and `ctx-gate
+  // mcp-check` is there for a manual rebuild. Re-running `init` on an
+  // already-set-up repo must stay fast and must not re-spawn the binary.
+  const mcpIndexResult = mcpAvailable && isFreshInit
+    ? await codebaseMemoryClient.runIndexBuildAndConfirm(repoRoot, opts.mcp)
+    : null;
 
-  return { manifest, standing, features, learned, mcpAvailable, mcpGuidance };
+  const hooksPath = writeHooksFile(repoRoot, opts.ctxGateJsPath || DEFAULT_CTX_GATE_JS_PATH);
+
+  return { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath };
 }
 
 module.exports = { init };
