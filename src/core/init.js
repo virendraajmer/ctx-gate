@@ -9,16 +9,17 @@ const { detectNode } = require('../detectors/node');
 const { detectReact } = require('../detectors/react');
 const { detectPython } = require('../detectors/python');
 const { detectDotnet } = require('../detectors/dotnet');
-const { emptyManifest, emptyStanding, emptyFeatures } = require('../memory/schema');
+const { emptyManifest, emptyStanding, emptyFeatures, emptyLearned, defaultTeamConfig } = require('../memory/schema');
 const { buildStandingEntries, buildFeatureMappings } = require('./standingQuestions');
 const store = require('../memory/store');
+const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
 
 /**
  * @param {string} repoRoot
  * @param {Object} [opts]
  * @param {{ input?: NodeJS.ReadableStream, output?: NodeJS.WritableStream }} [opts.streams]
  *   readline streams for the standing questions — defaults to process.stdin/stdout.
- * @returns {Promise<{ manifest: Object, standing: Object, features: Object }>}
+ * @returns {Promise<{ manifest: Object, standing: Object, features: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null }>}
  */
 async function init(repoRoot, opts = {}) {
   const manifest = emptyManifest();
@@ -63,9 +64,29 @@ async function init(repoRoot, opts = {}) {
     store.writeFeatures(repoRoot, features);
   }
 
-  // TODO(phase 3): check codebase-memory-mcp availability and print guidance
+  // Committed from the start (per the target-repo commit tree) even
+  // though it stays empty until ctx-gate learn promotes a first pattern.
+  let learned = store.readLearned(repoRoot);
+  if (!learned) {
+    learned = emptyLearned();
+    store.writeLearned(repoRoot, learned);
+  }
 
-  return { manifest, standing, features };
+  const { team } = store.readConfig(repoRoot);
+  if (!team) {
+    store.writeTeamConfig(repoRoot, defaultTeamConfig());
+  }
+
+  store.ensureGitignoreEntries(repoRoot, [
+    '.context-ops/memory/answers.jsonl',
+    '.context-ops/config.local.yml',
+    '.context-ops/logs/',
+  ]);
+
+  const mcpAvailable = codebaseMemoryClient.isAvailable();
+  const mcpGuidance = mcpAvailable ? null : codebaseMemoryClient.guidanceText();
+
+  return { manifest, standing, features, learned, mcpAvailable, mcpGuidance };
 }
 
 module.exports = { init };

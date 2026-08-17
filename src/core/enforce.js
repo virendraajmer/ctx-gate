@@ -5,15 +5,20 @@
 // (config.yml, committed) and local level (config.local.yml, gitignored)
 // combine as max(team, local) — local can only raise, never lower.
 
+const store = require('../memory/store');
+
 const ORDER = { off: 0, warn: 1, block: 2 };
 
 /**
  * @param {'off'|'warn'|'block'} teamLevel
- * @param {'off'|'warn'|'block'} localLevel
+ * @param {'off'|'warn'|'block'|null|undefined} localLevel
  * @returns {'off'|'warn'|'block'}
  */
 function computeEffectiveLevel(teamLevel, localLevel) {
-  throw new Error('not implemented');
+  const teamRank = ORDER[teamLevel] ?? ORDER.off;
+  const localRank = localLevel != null ? (ORDER[localLevel] ?? ORDER.off) : ORDER.off;
+  const rank = Math.max(teamRank, localRank);
+  return Object.keys(ORDER).find((level) => ORDER[level] === rank);
 }
 
 /**
@@ -22,19 +27,70 @@ function computeEffectiveLevel(teamLevel, localLevel) {
  * rather than silently trusting a lower value.
  *
  * @param {'off'|'warn'|'block'} teamLevel
- * @param {'off'|'warn'|'block'} localLevel
+ * @param {'off'|'warn'|'block'|null|undefined} localLevel
  */
 function assertNoDowngrade(teamLevel, localLevel) {
-  throw new Error('not implemented');
+  if (localLevel == null) {
+    return;
+  }
+  const teamRank = ORDER[teamLevel] ?? ORDER.off;
+  const localRank = ORDER[localLevel] ?? ORDER.off;
+  if (localRank < teamRank) {
+    throw new Error(
+      `config.local.yml enforcement level "${localLevel}" is below the team level "${teamLevel}" — ` +
+        'a local override may only raise the effective level, never lower it.'
+    );
+  }
 }
 
 /**
  * @param {import('../adapters/types').EnforceRequest} request
- * @param {Object} deps - { effectiveLevel, sessionCache, answersLogPath }
+ * @param {Object} deps - { effectiveLevel, sessionCache, answersLog }
  * @returns {import('../adapters/types').EnforceDecision}
  */
 function decide(request, deps) {
-  throw new Error('not implemented');
+  const { effectiveLevel, sessionCache = {}, answersLog = [] } = deps;
+
+  // Read-only tools are always allowed, checked before any level logic.
+  if (request.changeType !== 'write') {
+    return { decision: 'allow' };
+  }
+
+  if (effectiveLevel === 'off') {
+    return { decision: 'allow' };
+  }
+
+  if (effectiveLevel === 'warn') {
+    return { decision: 'warn', reason: 'This request looked underspecified when last checked — proceeding anyway.' };
+  }
+
+  // block: deny only if the linked check flagged BOTH scope and acceptance
+  // unknown, and nothing has been recorded for this session since.
+  const session = sessionCache[request.check.sessionId];
+  if (!session) {
+    return { decision: 'allow' };
+  }
+
+  const unknownSlots = session.unknownSlots || [];
+  const bothUnknown = unknownSlots.includes('scope') && unknownSlots.includes('acceptance');
+  if (!bothUnknown) {
+    return { decision: 'allow' };
+  }
+
+  const sessionCheckedAt = session.timestamp ? new Date(session.timestamp) : null;
+  const answeredSince = answersLog.some(
+    (entry) =>
+      entry.sessionId === request.check.sessionId &&
+      (!sessionCheckedAt || new Date(entry.timestamp) >= sessionCheckedAt)
+  );
+  if (answeredSince) {
+    return { decision: 'allow' };
+  }
+
+  return {
+    decision: 'deny',
+    reason: 'Missing scope and acceptance criteria for this request — clarify before this write proceeds.',
+  };
 }
 
 /**
@@ -45,7 +101,10 @@ function decide(request, deps) {
  * @param {'off'|'warn'|'block'} level
  */
 function setLocalOverride(repoRoot, level) {
-  throw new Error('not implemented');
+  if (!(level in ORDER)) {
+    throw new Error(`Invalid enforcement level: ${level}`);
+  }
+  store.writeLocalConfig(repoRoot, { version: 1, enforcement: level });
 }
 
 module.exports = { ORDER, computeEffectiveLevel, assertNoDowngrade, decide, setLocalOverride };

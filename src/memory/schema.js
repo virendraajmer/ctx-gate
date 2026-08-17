@@ -73,6 +73,13 @@ function emptyFeatures() {
   return { version: 1, mappings: [] };
 }
 
+/**
+ * @returns {Object} an empty learned.yml shape
+ */
+function emptyLearned() {
+  return { version: 1, patterns: [] };
+}
+
 module.exports = {
   MANIFEST_SCHEMA_VERSION,
   STANDING_SLOTS,
@@ -83,4 +90,5 @@ module.exports = {
   defaultLocalConfig,
   emptyStanding,
   emptyFeatures,
+  emptyLearned,
 };

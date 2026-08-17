@@ -48,13 +48,20 @@ function silentStreams(blankLines = 10) {
 test('init detects node+react and writes manifest.json', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    const { manifest, standing } = await init(dir, { streams: silentStreams() });
+    const { manifest, standing, learned, mcpAvailable, mcpGuidance } = await init(dir, { streams: silentStreams() });
     assert.equal(manifest.stacks.node.detected, true);
     assert.equal(manifest.stacks.node.packageManager, 'pnpm');
     assert.equal(manifest.stacks.react.detected, true);
     assert.equal(manifest.stacks.react.router, 'react-router');
     assert.equal(manifest.stacks.react.screens.length, 2);
     assert.equal(standing.entries.length, 6);
+    assert.deepEqual(learned, { version: 1, patterns: [] });
+    assert.equal(fs.existsSync(path.join(dir, '.context-ops', 'memory', 'learned.yml')), true);
+    assert.equal(typeof mcpAvailable, 'boolean');
+    assert.equal(mcpGuidance, mcpAvailable ? null : mcpGuidance);
+    if (!mcpAvailable) {
+      assert.match(mcpGuidance, /codebase-memory-mcp not found on PATH/);
+    }
 
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(dir, '.context-ops', 'manifest.json'), 'utf8')
