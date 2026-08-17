@@ -6,7 +6,7 @@ Context optimizer and zero-LLM requirement gate for AI coding agents
 (GitHub Copilot in VS Code today; designed to support other agent CLIs
 later — see [Architecture](#architecture)).
 
-ctx-gate has two capabilities in one tool:
+ctx-gate has three capabilities in one tool:
 
 - **Context Optimizer** (`ctx-gate optimize`) scans a target repo and
   writes token-budgeted context files that GitHub Copilot loads
@@ -21,6 +21,12 @@ ctx-gate has two capabilities in one tool:
   answers over time and promotes repeated patterns into permanent
   per-repo memory. `ctx-gate enforce` can optionally block write actions
   on badly underspecified requests once a team opts in.
+- **Agent Pack** (`ctx-gate agents install` / `update` / `validate`)
+  bundles a reviewed plan → implement → review multi-agent workflow
+  (`.github/agents/{planner,implementer,reviewer,pipeline}.agent.md`) so
+  each phase of a task runs in its own fresh, small context instead of
+  one long, expensive chat session. See
+  [Agent Pack](#agent-pack) below.
 
 Each repo that installs ctx-gate keeps its own private memory under
 `.context-ops/` — memory is never shared across repos, only within a
@@ -207,7 +213,51 @@ which files get re-read most often across sessions (a signal that `check`
 or the optimizer's generated context is missing something those tasks
 needed). Every number is either read directly from local state or run
 through the real tokenizer in `src/tokenBudget.js` — anything that can't
-be measured prints `not measured`, never a guess.
+be measured prints `not measured`, never a guess. Also reports pipeline-
+orchestrated turns (sub-agent prompts from the [Agent Pack](#agent-pack)'s
+pipeline orchestrator) separately, since those are excluded from the
+median/max turn counts above — see [Agent Pack](#agent-pack).
+
+### `ctx-gate agents install [--with-guidelines]`
+
+Installs the four [Agent Pack](#agent-pack) files
+(`planner`/`implementer`/`reviewer`/`pipeline.agent.md`) into
+`.github/agents/`. For each file: writes it if missing, reports
+`unchanged` and skips if it already matches what would be installed, or
+reports a `CONFLICT` with a diff and **never overwrites** it if it exists
+with different content — same diff-not-overwrite rule as `optimize`.
+Records installed file hashes in `.context-ops/agent-pack.json` so a
+later `update` can tell "you edited this locally" apart from "the pack
+version changed". Also adds `.agentflow/` (the pipeline's per-task run
+artifacts — `plan.md`, `changes.md`, `review.md`, `run.md`) to
+`.gitignore`, unless `agentPack.commitArtifacts: true` in
+`.context-ops/config.yml`. Pass `--with-guidelines` to also install the
+~1000-line agent-authoring guidelines file to
+`.github/instructions/agents.instructions.md` (opt-in only — it's large,
+though cheap in practice since it's path-scoped to `**/*.agent.md` and
+most teams never author their own agents); its real measured token count
+(via `src/tokenBudget.js`) is printed either way.
+
+### `ctx-gate agents update`
+
+Compares `.context-ops/agent-pack.json` against the bundled pack's
+current version. For each file, reports one of `unchanged`, `safe to
+apply` (only the pack changed — applied automatically after showing the
+diff), `locally modified`, or `manual merge needed` (both changed) — the
+latter two are reported but never written to, so a local edit is never
+silently clobbered.
+
+### `ctx-gate agents validate`
+
+Validates every `*.agent.md` file found in the repo against the rules in
+`agent-pack/agents.instructions.md`: required/well-formed `description`,
+filename convention, the 30,000-character size budget, dangling
+`handoffs[].agent` targets (these are silently ignored at runtime
+otherwise — easy to miss without this check), a present-and-non-empty
+`tools` list, and `model`/`handoffs` set without `target: 'vscode'`
+(unsupported on GitHub.com's coding agent). Runs automatically as a
+non-fatal check at the end of `ctx-gate init` if any `*.agent.md` files
+already exist in the repo; run it standalone any time otherwise.
 
 ## Long-session cost warning
 
@@ -233,6 +283,56 @@ Read-only tool calls are always allowed regardless of level. `block`
 only denies a write when a request was flagged as missing **both** scope
 and acceptance criteria, and nothing has been clarified since.
 
+## Agent Pack
+
+`ctx-gate agents install` bundles a reviewed, generic plan → implement →
+review multi-agent workflow into `.github/agents/`:
+
+- **`planner.agent.md`** turns a request into a minimal, file-scoped
+  `plan.md` — the File Map it writes is the contract every later phase
+  reads instead of re-exploring the codebase.
+- **`implementer.agent.md`** executes that plan into working code plus a
+  short `changes.md` change log.
+- **`reviewer.agent.md`** judges the implementation against the plan for
+  correctness, scope, security, and test coverage, writing `review.md`
+  with an APPROVED / CHANGES REQUIRED / REPLAN verdict.
+- **`pipeline.agent.md`** orchestrates all three end to end with no
+  manual handoff clicks, capped fix/replan cycles, and a running
+  `run.md` log — invoke it directly for a hands-off run, or invoke
+  `planner`/`implementer`/`reviewer` individually to drive each phase by
+  hand.
+
+Each phase runs in its own fresh, small context instead of one long
+chat session growing more expensive with every turn — the same
+motivation as the Context Optimizer, applied to how a task itself gets
+worked rather than to standing repo context. Per-task run artifacts
+(`plan.md`, `changes.md`, `review.md`, `run.md`) are written under
+`.agentflow/<taskId>/`, gitignored by default (see
+[`ctx-gate agents install`](#ctx-gate-agents-install---with-guidelines)).
+
+The pack is deliberately generic and only substitutes two things per
+repo: the `model` frontmatter value (from `agentPack.model` in
+`.context-ops/config.yml`, defaulting to the value the pack ships with)
+and, in `planner.agent.md` only, a Verification-section hint using the
+test command already detected in `manifest.json`. Everything else is
+installed byte-for-byte from the reviewed pack — see
+[`ctx-gate agents update`](#ctx-gate-agents-update) for how local edits
+are protected when the pack itself changes, and
+[`ctx-gate agents validate`](#ctx-gate-agents-validate) for checking any
+custom agent files you add later.
+
+The `userPromptSubmitted` hook detects the pipeline's own sub-agent
+invocation prompts (its fixed `Act as the agent "<NAME>" defined in
+"<SPEC_PATH>"` template, or any prompt referencing a `.agentflow/*/`
+artifact) and skips full Requirement Gate analysis on them — they're
+already fully specified, and injecting clarifying questions into a
+handoff prompt would interfere with the workflow. The gate still runs
+normally on the human's original request to the planner, since that's
+exactly where a vague request would otherwise cost tokens across all
+three phases. These skipped turns are tracked separately and reported by
+[`ctx-gate stats`](#ctx-gate-stats) rather than folded into normal
+session turn counts.
+
 ## Memory files
 
 Everything below lives under `.context-ops/` inside the target repo —
@@ -244,7 +344,8 @@ never centralized, never shared across repos.
 | `memory/standing.yml` | yes | Answers to the standing questions (what "done" means, high-risk paths, error-handling/naming/logging conventions) — confirmed by a human, or auto-detected where possible. |
 | `memory/features.yml` | yes | Business words your team uses mapped to specific folders (e.g. "sorting" → `src/utils/sort.js`), so `check` can resolve vague requests. |
 | `memory/learned.yml` | yes | Patterns promoted by `ctx-gate learn` once the same clarification has come up 3 times — starts empty. |
-| `config.yml` | yes | Team enforcement level + which agent adapter is active + session-warning thresholds. |
+| `config.yml` | yes | Team enforcement level + which agent adapter is active + session-warning thresholds + `agentPack.model`/`agentPack.commitArtifacts`. |
+| `agent-pack.json` | yes | Hashes of the currently-installed Agent Pack files, written by `ctx-gate agents install`/`update` — lets `update` tell a local edit apart from a pack version change. |
 | `memory/answers.jsonl` | no (gitignored) | Raw append-only log every `learn` call writes to, used to compute promotion — not curated, so not committed. |
 | `config.local.yml` | no (gitignored) | Your personal enforcement override, written by `ctx-gate enforce <level>`. |
 | `logs/` | no (gitignored) | `ctx-gate.log` (hook errors) and `session-cache.json` (short-lived per-session state shared between `check`/`learn`/`enforce`, since each hook fires as a separate process) — ephemeral, derived, never curated memory. |

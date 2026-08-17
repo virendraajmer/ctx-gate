@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     1. Reads VERSION from this repo (pinned, not a moving "main").
-    2. Copies bin/ + src/ + package.json + node_modules to
+    2. Copies bin/ + src/ + agent-pack/ + package.json + node_modules to
        $env:USERPROFILE\.ctx-gate\<version>\, and writes a current.txt
        pointer file (no symlink, to avoid requiring elevated privileges
        on Windows).
@@ -41,7 +41,7 @@ $VersionDir = Join-Path $InstallRoot $Version
 Write-Host "Installing ctx-gate $Version to $VersionDir ..."
 New-Item -ItemType Directory -Force -Path $VersionDir | Out-Null
 
-foreach ($item in @('bin', 'src', 'package.json')) {
+foreach ($item in @('bin', 'src', 'agent-pack', 'package.json')) {
     $src = Join-Path $SourceRoot $item
     if (Test-Path $src) {
         Copy-Item -Path $src -Destination $VersionDir -Recurse -Force

@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  isPipelineInvocation,
   isShortFollowUp,
   extractMentionedEntities,
   matchFeatures,
@@ -292,4 +293,46 @@ test('runCheck falls back to searchCode when no manifest/feature matches are fou
   );
   assert.ok(response.matches.some((m) => m.path === 'src/legacy/report.js' && m.confidence === 'low'));
   assert.equal(response.unknownSlots.includes('scope'), false);
+});
+
+// --- isPipelineInvocation / runCheck pipeline skip --------------------
+
+test('isPipelineInvocation matches the pipeline sub-agent invocation template', () => {
+  const prompt =
+    'Act as the agent "Planner" defined in ".github/agents/planner.agent.md".\n' +
+    'Read and apply that spec in full.\n\ntaskId: add-retry-queue\nbasePath: .agentflow/add-retry-queue\n\n' +
+    'Task: add a retry queue\nReturn ONLY: status, artifact path, and up to 3 bullets.';
+  assert.equal(isPipelineInvocation(prompt), true);
+});
+
+test('isPipelineInvocation matches a prompt that only references a .agentflow/ artifact path', () => {
+  assert.equal(isPipelineInvocation('Fix only the BLOCKER items in .agentflow/add-retry-queue/review.md'), true);
+});
+
+test('isPipelineInvocation is false for a normal human request', () => {
+  assert.equal(isPipelineInvocation('add a retry queue around fetchOrder'), false);
+  assert.equal(isPipelineInvocation(''), false);
+});
+
+test('runCheck skips full analysis and reports skipReason "pipeline" for a sub-agent invocation prompt', async () => {
+  const prompt = 'Act as the agent "Implementer" defined in ".github/agents/implementer.agent.md". Execute .agentflow/add-retry-queue/plan.md.';
+  const response = await runCheck({ prompt, sessionId: 'pipeline-1', cwd: '/repo' }, deps());
+  assert.equal(response.skipped, true);
+  assert.equal(response.skipReason, 'pipeline');
+  assert.deepEqual(response.questions, []);
+});
+
+test('runCheck still runs full analysis on the human\'s original request to the planner', async () => {
+  const response = await runCheck(
+    { prompt: 'add a retry queue around fetchOrder', sessionId: 'human-1', cwd: '/repo' },
+    deps()
+  );
+  assert.equal(response.skipped, false);
+  assert.equal(response.skipReason, undefined);
+});
+
+test('a short-followup skip still reports skipReason "short-followup"', async () => {
+  const response = await runCheck({ prompt: 'yes', sessionId: 'human-2', cwd: '/repo' }, deps());
+  assert.equal(response.skipped, true);
+  assert.equal(response.skipReason, 'short-followup');
 });

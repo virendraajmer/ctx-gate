@@ -22,7 +22,7 @@ VERSION_DIR="$INSTALL_ROOT/$VERSION"
 echo "Installing ctx-gate $VERSION to $VERSION_DIR ..."
 mkdir -p "$VERSION_DIR"
 
-for item in bin src package.json; do
+for item in bin src agent-pack package.json; do
   if [[ -e "$SCRIPT_DIR/$item" ]]; then
     cp -R "$SCRIPT_DIR/$item" "$VERSION_DIR/"
   fi

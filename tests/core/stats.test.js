@@ -45,6 +45,21 @@ test('computeSessionStats reports not-measured-friendly nulls when there are no 
   assert.equal(report.maxTurns, null);
 });
 
+test('computeSessionStats sums pipelineTurns across sessions within the window, excluding stale ones', () => {
+  const states = [
+    state({ pipelineTurns: 4 }),
+    state({ pipelineTurns: 2 }),
+    state({ pipelineTurns: 100, lastSeenAt: '2025-12-01T00:00:00.000Z' }), // stale, excluded
+  ];
+  const report = computeSessionStats(states, NOW);
+  assert.equal(report.pipelineTurns, 6);
+});
+
+test('computeSessionStats reports pipelineTurns as 0 when absent from session state', () => {
+  const report = computeSessionStats([state()], NOW);
+  assert.equal(report.pipelineTurns, 0);
+});
+
 test('computeSessionStats counts sessions that crossed the soft/hard warning thresholds', () => {
   const states = [
     state({ warningsEmitted: 0 }),

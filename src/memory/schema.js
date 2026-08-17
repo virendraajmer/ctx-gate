@@ -26,6 +26,11 @@ const ENFORCEMENT_LEVELS = ['off', 'warn', 'block'];
 const DEFAULT_SESSION_WARN_AT = 6000;
 const DEFAULT_SESSION_WARN_HARD_AT = 15000;
 
+// Falls back to agent-pack/pack.json#defaultModel at write time; duplicated
+// here as a schema-level default only so defaultTeamConfig() has no
+// circular dependency on src/core/agentPack.js.
+const DEFAULT_AGENT_PACK_MODEL = 'Claude Sonnet 4.5';
+
 /**
  * @returns {Object} an empty manifest.json shape with every stack key present
  */
@@ -55,6 +60,7 @@ function defaultTeamConfig() {
     sessionWarnAt: DEFAULT_SESSION_WARN_AT,
     sessionWarnHardAt: DEFAULT_SESSION_WARN_HARD_AT,
     sessionWarnings: true,
+    agentPack: { model: DEFAULT_AGENT_PACK_MODEL, commitArtifacts: false },
   };
 }
 
@@ -102,6 +108,7 @@ function emptySessionState(sessionId, timestamp) {
     fileReadCounts: {},
     estimatedBytesRead: 0,
     warningsEmitted: 0,
+    pipelineTurns: 0,
     startedAt: timestamp,
     lastSeenAt: timestamp,
   };
@@ -114,6 +121,7 @@ module.exports = {
   ENFORCEMENT_LEVELS,
   DEFAULT_SESSION_WARN_AT,
   DEFAULT_SESSION_WARN_HARD_AT,
+  DEFAULT_AGENT_PACK_MODEL,
   emptyManifest,
   defaultTeamConfig,
   defaultLocalConfig,

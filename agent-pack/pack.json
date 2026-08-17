@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "defaultModel": "Claude Sonnet 4.5",
+  "constraints": [
+    "No agent file in this pack may set disable-model-invocation: true. pipeline.agent.md invokes planner, implementer, and reviewer as subagents; that flag would silently break the whole workflow by making a step un-invocable. Verified clear as of version 1.0.0 -- re-check this if any agent body is edited."
+  ],
+  "files": {
+    "planner.agent.md": "0123090d1d6b3846ed609d38f79854e4cd15ef4b2d99a1a7404b2f6dcc9e8d78",
+    "implementer.agent.md": "98b0c75a5873840111c4dbc46e3ed9b51e34b8a805c21f4bd4d5429499ad8cd6",
+    "reviewer.agent.md": "9b8fbdc8039acbd7f37df22fad3140c5f589ee915435aa7504b67cacf27bcc1b",
+    "pipeline.agent.md": "cadacf0180c3630c58250a496fe5804cd43df3f35ffc768a043b143716af9cb1",
+    "agents.instructions.md": "05ca77656669d76091460783bf8e82bcd0ec91e9d27f6d2dab570a66e170380d"
+  }
+}

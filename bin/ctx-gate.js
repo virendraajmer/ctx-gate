@@ -91,7 +91,7 @@ async function main(argv) {
     case 'init': {
       const { init } = require('../src/core/init');
       const repoRoot = process.cwd();
-      const { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath } =
+      const { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath, agentPackReport } =
         await init(repoRoot, { ctxGateJsPath: __filename });
       process.stdout.write('ctx-gate: wrote .context-ops/manifest.json\n');
       process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
@@ -107,6 +107,11 @@ async function main(argv) {
         process.stdout.write(`ctx-gate: codebase-memory-mcp found on PATH — ${mcpMessage}\n`);
       } else {
         process.stdout.write(`ctx-gate: ${mcpGuidance}\n`);
+      }
+      if (agentPackReport && agentPackReport.files.length > 0 && agentPackReport.errorCount > 0) {
+        process.stdout.write(
+          `ctx-gate: ${agentPackReport.errorCount} error(s) found in existing *.agent.md files — run \`ctx-gate agents validate\` for details.\n`
+        );
       }
       return;
     }
@@ -195,6 +200,19 @@ async function main(argv) {
           sessionState.warningsEmitted = response.sessionWarning.warningsEmittedAfter;
           try {
             store.writeSessionState(repoRoot, request.sessionId, sessionState);
+          } catch (err) {
+            logHookError(repoRoot, 'check', err);
+          }
+        }
+
+        // Tracked separately from turnCount (which learn.js advances on
+        // postToolUse) so `ctx-gate stats` can report pipeline-orchestrated
+        // sub-agent turns without folding them into normal session medians.
+        if (response.skipped && response.skipReason === 'pipeline') {
+          try {
+            const state = sessionState || schema.emptySessionState(request.sessionId, new Date().toISOString());
+            state.pipelineTurns = (state.pipelineTurns || 0) + 1;
+            store.writeSessionState(repoRoot, request.sessionId, state);
           } catch (err) {
             logHookError(repoRoot, 'check', err);
           }
@@ -401,6 +419,72 @@ async function main(argv) {
       }
       return;
     }
+    case 'agents': {
+      const repoRoot = process.cwd();
+      const sub = rest[0];
+
+      if (sub === 'install') {
+        const { install } = require('../src/core/agentPack');
+        const withGuidelines = rest.includes('--with-guidelines');
+        const { results } = install(repoRoot, { withGuidelines });
+        let hadConflict = false;
+        for (const r of results) {
+          if (r.status === 'conflict') {
+            hadConflict = true;
+            process.stdout.write(`ctx-gate: ${r.file} — CONFLICT, not overwritten (edit or delete it, then re-run)\n`);
+            process.stdout.write(`${r.diffText}\n`);
+            continue;
+          }
+          const tokenSuffix = r.tokenCount != null ? ` — ${r.tokenCount} tokens (measured)` : '';
+          process.stdout.write(`ctx-gate: ${r.file} — ${r.status}${tokenSuffix}\n`);
+        }
+        if (!withGuidelines) {
+          process.stdout.write('ctx-gate: authoring guidelines not installed — re-run with --with-guidelines to add .github/instructions/agents.instructions.md\n');
+        }
+        process.exitCode = hadConflict ? 1 : 0;
+        return;
+      }
+
+      if (sub === 'update') {
+        const { update } = require('../src/core/agentPack');
+        const { results } = update(repoRoot);
+        for (const r of results) {
+          process.stdout.write(`ctx-gate: ${r.file} — ${r.status}\n`);
+          if (r.diffText) {
+            process.stdout.write(`${r.diffText}\n`);
+          }
+        }
+        return;
+      }
+
+      if (sub === 'validate' || !sub) {
+        const { validate } = require('../src/core/agentPack');
+        const report = validate(repoRoot);
+        if (report.files.length === 0) {
+          process.stdout.write('ctx-gate: no *.agent.md files found in this repo\n');
+          return;
+        }
+        for (const f of report.files) {
+          const rel = path.relative(repoRoot, f.file).replace(/\\/g, '/');
+          for (const e of f.errors) {
+            process.stdout.write(`ctx-gate: ${rel} — ERROR: ${e}\n`);
+          }
+          for (const w of f.warnings) {
+            process.stdout.write(`ctx-gate: ${rel} — warning: ${w}\n`);
+          }
+          if (f.errors.length === 0 && f.warnings.length === 0) {
+            process.stdout.write(`ctx-gate: ${rel} — ok\n`);
+          }
+        }
+        process.stdout.write(`ctx-gate: ${report.errorCount} error(s), ${report.warningCount} warning(s) across ${report.files.length} file(s)\n`);
+        process.exitCode = report.errorCount > 0 ? 1 : 0;
+        return;
+      }
+
+      process.stderr.write(`Unknown "ctx-gate agents" subcommand: ${sub}\nUsage: ctx-gate agents install [--with-guidelines] | update | validate\n`);
+      process.exitCode = 1;
+      return;
+    }
     case 'optimize': {
       const { optimize } = require('../src/core/optimize');
       const repoRoot = process.cwd();
@@ -438,6 +522,7 @@ async function main(argv) {
       process.stdout.write(`Max turns: ${report.maxTurns === null ? 'not measured' : report.maxTurns}\n`);
       process.stdout.write(`Sessions that crossed the soft warning threshold: ${report.sessionsCrossedSoft}\n`);
       process.stdout.write(`Sessions that crossed the firm warning threshold: ${report.sessionsCrossedHard}\n`);
+      process.stdout.write(`Pipeline-orchestrated turns (agent-pack sub-agent prompts, excluded from turn medians above): ${report.pipelineTurns}\n`);
       process.stdout.write('Most re-read files:\n');
       if (report.mostReread.length === 0) {
         process.stdout.write('  (none)\n');

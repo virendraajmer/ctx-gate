@@ -15,6 +15,7 @@ const { buildStandingEntries, buildFeatureMappings } = require('./standingQuesti
 const store = require('../memory/store');
 const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
 const { writeHooksFile } = require('./hooks');
+const { validate: validateAgentPack } = require('./agentPack');
 
 const DEFAULT_CTX_GATE_JS_PATH = require.resolve(path.join('..', '..', 'bin', 'ctx-gate.js'));
 
@@ -106,7 +107,16 @@ async function init(repoRoot, opts = {}) {
 
   const hooksPath = writeHooksFile(repoRoot, opts.ctxGateJsPath || DEFAULT_CTX_GATE_JS_PATH);
 
-  return { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath };
+  // Non-fatal: any *.agent.md files already in the repo get a validation
+  // pass, but a broken agent file must never stop init from completing.
+  let agentPackReport = null;
+  try {
+    agentPackReport = validateAgentPack(repoRoot);
+  } catch {
+    agentPackReport = null;
+  }
+
+  return { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath, agentPackReport };
 }
 
 module.exports = { init };

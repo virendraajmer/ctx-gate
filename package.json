@@ -1,6 +1,6 @@
 {
   "name": "ctx-gate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Context optimizer and zero-LLM requirement gate for AI coding agents",
   "type": "commonjs",
   "bin": {
@@ -10,6 +10,7 @@
   "files": [
     "bin/",
     "src/",
+    "agent-pack/",
     "hook-templates/",
     "install.sh",
     "install.ps1",
