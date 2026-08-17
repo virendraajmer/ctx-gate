@@ -1,0 +1,39 @@
+{
+  "$schemaVersion": 1,
+  "generatedAt": "2026-08-17T10:28:09.383Z",
+  "ctxGateVersion": "0.1.0",
+  "stacks": {
+    "node": {
+      "detected": true,
+      "packageManager": "npm",
+      "testCommand": "node --test \"tests/**/*.test.js\"",
+      "buildCommand": null,
+      "lintConfig": null,
+      "dependencies": [
+        "diff",
+        "gpt-tokenizer",
+        "js-yaml"
+      ]
+    },
+    "react": {
+      "detected": false
+    },
+    "python": {
+      "detected": false
+    },
+    "dotnet": {
+      "detected": true,
+      "solutionFiles": [
+        "tests/fixtures/dotnet-basic/Basic.sln"
+      ],
+      "projects": [
+        {
+          "name": "Basic",
+          "path": "tests/fixtures/dotnet-basic/Basic.csproj",
+          "targetFramework": "net8.0"
+        }
+      ]
+    }
+  },
+  "endpoints": []
+}

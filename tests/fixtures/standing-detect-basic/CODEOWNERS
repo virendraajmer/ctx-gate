@@ -1,0 +1,5 @@
+# Payments team owns the payments module
+src/payments/ @team-payments
+
+# Auth team owns auth
+src/auth/ @team-auth

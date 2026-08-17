@@ -47,9 +47,13 @@ async function main(argv) {
     case 'init': {
       const { init } = require('../src/core/init');
       const repoRoot = process.cwd();
-      const manifest = await init(repoRoot);
+      const { manifest, standing, features } = await init(repoRoot);
       process.stdout.write('ctx-gate: wrote .context-ops/manifest.json\n');
       process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+      process.stdout.write('ctx-gate: wrote .context-ops/memory/standing.yml\n');
+      process.stdout.write(`${JSON.stringify(standing, null, 2)}\n`);
+      process.stdout.write('ctx-gate: wrote .context-ops/memory/features.yml\n');
+      process.stdout.write(`${JSON.stringify(features, null, 2)}\n`);
       return;
     }
     case 'check':

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable, Writable } = require('node:stream');
 
 const { init } = require('../../src/core/init');
 
@@ -16,15 +17,44 @@ function copyFixture(name) {
   return dest;
 }
 
+// Scripts blank-line answers so the standing/feature readline prompts
+// resolve with their defaults instead of blocking on real stdin during
+// tests. Lines are pushed one per macrotask (setImmediate) rather than
+// all at once, since readline drops any lines that arrive before the
+// matching `.question()` call is listening and closes prematurely once
+// the input stream ends.
+function silentStreams(blankLines = 10) {
+  let remaining = blankLines;
+  const input = new Readable({
+    read() {
+      setImmediate(() => {
+        if (remaining <= 0) {
+          this.push(null);
+        } else {
+          remaining -= 1;
+          this.push('\n');
+        }
+      });
+    },
+  });
+  const output = new Writable({
+    write(chunk, enc, cb) {
+      cb();
+    },
+  });
+  return { input, output };
+}
+
 test('init detects node+react and writes manifest.json', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    const manifest = await init(dir);
+    const { manifest, standing } = await init(dir, { streams: silentStreams() });
     assert.equal(manifest.stacks.node.detected, true);
     assert.equal(manifest.stacks.node.packageManager, 'pnpm');
     assert.equal(manifest.stacks.react.detected, true);
     assert.equal(manifest.stacks.react.router, 'react-router');
     assert.equal(manifest.stacks.react.screens.length, 2);
+    assert.equal(standing.entries.length, 6);
 
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(dir, '.context-ops', 'manifest.json'), 'utf8')
@@ -38,7 +68,7 @@ test('init detects node+react and writes manifest.json', async () => {
 test('init detects python fastapi and lifts endpoints to manifest.endpoints', async () => {
   const dir = copyFixture('python-fastapi-basic');
   try {
-    const manifest = await init(dir);
+    const { manifest } = await init(dir, { streams: silentStreams() });
     assert.equal(manifest.stacks.python.detected, true);
     assert.equal(manifest.stacks.python.framework, 'fastapi');
     assert.equal(manifest.stacks.python.endpoints, undefined);
@@ -54,7 +84,7 @@ test('init detects python fastapi and lifts endpoints to manifest.endpoints', as
 test('init detects a dotnet project', async () => {
   const dir = copyFixture('dotnet-basic');
   try {
-    const manifest = await init(dir);
+    const { manifest } = await init(dir, { streams: silentStreams() });
     assert.equal(manifest.stacks.dotnet.detected, true);
     assert.equal(manifest.stacks.dotnet.projects.length, 1);
   } finally {
@@ -65,7 +95,7 @@ test('init detects a dotnet project', async () => {
 test('init on an empty repo detects nothing but still writes a manifest', async () => {
   const dir = copyFixture('empty-repo');
   try {
-    const manifest = await init(dir);
+    const { manifest } = await init(dir, { streams: silentStreams() });
     assert.equal(manifest.stacks.node.detected, false);
     assert.equal(manifest.stacks.react.detected, false);
     assert.equal(manifest.stacks.python.detected, false);

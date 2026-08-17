@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "gpt-tokenizer": "^2.1.2",
-    "diff": "^5.2.0"
+    "diff": "^5.2.0",
+    "js-yaml": "^4.1.0"
   },
   "license": "MIT"
 }

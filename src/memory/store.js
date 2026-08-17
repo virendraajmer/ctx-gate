@@ -7,9 +7,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 
 function contextOpsDir(repoRoot) {
   return path.join(repoRoot, '.context-ops');
+}
+
+function memoryDir(repoRoot) {
+  return path.join(contextOpsDir(repoRoot), 'memory');
 }
 
 /** @param {string} repoRoot @returns {Object} */
@@ -25,14 +30,23 @@ function writeManifest(repoRoot, manifest) {
   fs.writeFileSync(path.join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
-/** @param {string} repoRoot @returns {Object} */
+/**
+ * @param {string} repoRoot
+ * @returns {Object|null} the parsed standing.yml, or null if it doesn't exist yet
+ */
 function readStanding(repoRoot) {
-  throw new Error('not implemented');
+  const p = path.join(memoryDir(repoRoot), 'standing.yml');
+  if (!fs.existsSync(p)) {
+    return null;
+  }
+  return yaml.load(fs.readFileSync(p, 'utf8'));
 }
 
 /** @param {string} repoRoot @param {Object} standing */
 function writeStanding(repoRoot, standing) {
-  throw new Error('not implemented');
+  const dir = memoryDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'standing.yml'), yaml.dump(standing), 'utf8');
 }
 
 /** @param {string} repoRoot @returns {Object} */
@@ -45,14 +59,23 @@ function writeLearned(repoRoot, learned) {
   throw new Error('not implemented');
 }
 
-/** @param {string} repoRoot @returns {Object} */
+/**
+ * @param {string} repoRoot
+ * @returns {Object|null} the parsed features.yml, or null if it doesn't exist yet
+ */
 function readFeatures(repoRoot) {
-  throw new Error('not implemented');
+  const p = path.join(memoryDir(repoRoot), 'features.yml');
+  if (!fs.existsSync(p)) {
+    return null;
+  }
+  return yaml.load(fs.readFileSync(p, 'utf8'));
 }
 
 /** @param {string} repoRoot @param {Object} features */
 function writeFeatures(repoRoot, features) {
-  throw new Error('not implemented');
+  const dir = memoryDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'features.yml'), yaml.dump(features), 'utf8');
 }
 
 /**

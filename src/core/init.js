@@ -9,13 +9,16 @@ const { detectNode } = require('../detectors/node');
 const { detectReact } = require('../detectors/react');
 const { detectPython } = require('../detectors/python');
 const { detectDotnet } = require('../detectors/dotnet');
-const { emptyManifest } = require('../memory/schema');
+const { emptyManifest, emptyStanding, emptyFeatures } = require('../memory/schema');
+const { buildStandingEntries, buildFeatureMappings } = require('./standingQuestions');
 const store = require('../memory/store');
 
 /**
  * @param {string} repoRoot
  * @param {Object} [opts]
- * @returns {Promise<Object>} the written manifest
+ * @param {{ input?: NodeJS.ReadableStream, output?: NodeJS.WritableStream }} [opts.streams]
+ *   readline streams for the standing questions — defaults to process.stdin/stdout.
+ * @returns {Promise<{ manifest: Object, standing: Object, features: Object }>}
  */
 async function init(repoRoot, opts = {}) {
   const manifest = emptyManifest();
@@ -46,11 +49,23 @@ async function init(repoRoot, opts = {}) {
 
   store.writeManifest(repoRoot, manifest);
 
-  // TODO(phase 2): ask the 7 standing questions via readline/promises for
-  // slots not already filled by a detector, write .context-ops/memory/standing.yml
+  let standing = store.readStanding(repoRoot);
+  if (!standing) {
+    standing = emptyStanding();
+    standing.entries = await buildStandingEntries(repoRoot, opts.streams);
+    store.writeStanding(repoRoot, standing);
+  }
+
+  let features = store.readFeatures(repoRoot);
+  if (!features) {
+    features = emptyFeatures();
+    features.mappings = await buildFeatureMappings(repoRoot, opts.streams);
+    store.writeFeatures(repoRoot, features);
+  }
+
   // TODO(phase 3): check codebase-memory-mcp availability and print guidance
 
-  return manifest;
+  return { manifest, standing, features };
 }
 
 module.exports = { init };

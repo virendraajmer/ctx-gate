@@ -59,6 +59,20 @@ function defaultLocalConfig() {
   };
 }
 
+/**
+ * @returns {Object} an empty standing.yml shape
+ */
+function emptyStanding() {
+  return { version: 1, entries: [] };
+}
+
+/**
+ * @returns {Object} an empty features.yml shape
+ */
+function emptyFeatures() {
+  return { version: 1, mappings: [] };
+}
+
 module.exports = {
   MANIFEST_SCHEMA_VERSION,
   STANDING_SLOTS,
@@ -67,4 +81,6 @@ module.exports = {
   emptyManifest,
   defaultTeamConfig,
   defaultLocalConfig,
+  emptyStanding,
+  emptyFeatures,
 };
