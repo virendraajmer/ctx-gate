@@ -9,6 +9,8 @@ const {
   matchFeatures,
   matchLearned,
   identifyUnknownSlots,
+  estimateSessionCost,
+  evaluateSessionWarning,
   composeResponse,
   runCheck,
 } = require('../../src/core/gate');
@@ -201,6 +203,86 @@ for (const [i, row] of TABLE.entries()) {
     }
   });
 }
+
+// --- estimateSessionCost / evaluateSessionWarning ----------------------
+
+const sessionConfig = { sessionWarnAt: 1000, sessionWarnHardAt: 3000, sessionWarnings: true };
+
+test('estimateSessionCost is 0 for a null/absent state', () => {
+  assert.equal(estimateSessionCost(null), 0);
+});
+
+test('estimateSessionCost combines turns and bytes so heavy reads outrank many short turns', () => {
+  const manyShortTurns = estimateSessionCost({ turnCount: 15, estimatedBytesRead: 0 });
+  const fewHeavyTurns = estimateSessionCost({ turnCount: 5, estimatedBytesRead: 400000 });
+  assert.ok(fewHeavyTurns > manyShortTurns);
+});
+
+test('evaluateSessionWarning does nothing when there is no session state', () => {
+  assert.equal(evaluateSessionWarning(null, sessionConfig), null);
+});
+
+test('evaluateSessionWarning does nothing when sessionWarnings is disabled', () => {
+  const state = { turnCount: 100, estimatedBytesRead: 0, warningsEmitted: 0 };
+  assert.equal(evaluateSessionWarning(state, { ...sessionConfig, sessionWarnings: false }), null);
+});
+
+test('evaluateSessionWarning stays silent below the soft threshold', () => {
+  const state = { turnCount: 1, estimatedBytesRead: 0, warningsEmitted: 0 };
+  assert.equal(evaluateSessionWarning(state, sessionConfig), null);
+});
+
+test('evaluateSessionWarning fires the soft warning once the soft threshold is crossed', () => {
+  const state = { turnCount: 21, estimatedBytesRead: 0, warningsEmitted: 0 }; // 21*50 = 1050 >= 1000
+  const result = evaluateSessionWarning(state, sessionConfig);
+  assert.equal(result.level, 'soft');
+  assert.equal(result.warningsEmittedAfter, 1);
+});
+
+test('evaluateSessionWarning does not re-fire the soft warning once already emitted', () => {
+  const state = { turnCount: 21, estimatedBytesRead: 0, warningsEmitted: 1 };
+  assert.equal(evaluateSessionWarning(state, sessionConfig), null);
+});
+
+test('evaluateSessionWarning fires the firm warning once the hard threshold is crossed', () => {
+  const state = { turnCount: 61, estimatedBytesRead: 0, warningsEmitted: 1 }; // 61*50 = 3050 >= 3000
+  const result = evaluateSessionWarning(state, sessionConfig);
+  assert.equal(result.level, 'hard');
+  assert.equal(result.warningsEmittedAfter, 2);
+});
+
+test('evaluateSessionWarning caps at two warnings per session, never a third', () => {
+  const state = { turnCount: 1000, estimatedBytesRead: 0, warningsEmitted: 2 };
+  assert.equal(evaluateSessionWarning(state, sessionConfig), null);
+});
+
+test('evaluateSessionWarning skips straight to the firm warning if the hard threshold is crossed on the first check', () => {
+  const state = { turnCount: 1000, estimatedBytesRead: 0, warningsEmitted: 0 };
+  const result = evaluateSessionWarning(state, sessionConfig);
+  assert.equal(result.level, 'hard');
+  assert.equal(result.warningsEmittedAfter, 2);
+});
+
+test('runCheck attaches sessionWarning to both skipped and non-skipped responses', async () => {
+  const state = { turnCount: 21, estimatedBytesRead: 0, warningsEmitted: 0 };
+  const skippedResponse = await runCheck(
+    { prompt: 'yes', sessionId: 's1', cwd: '/repo' },
+    deps({ sessionState: state, config: sessionConfig })
+  );
+  assert.equal(skippedResponse.skipped, true);
+  assert.equal(skippedResponse.sessionWarning.level, 'soft');
+
+  const fullResponse = await runCheck(
+    { prompt: 'add validation', sessionId: 's2', cwd: '/repo' },
+    deps({ sessionState: state, config: sessionConfig })
+  );
+  assert.equal(fullResponse.sessionWarning.level, 'soft');
+});
+
+test('runCheck.sessionWarning is null when no session state is passed', async () => {
+  const response = await runCheck({ prompt: 'add validation', sessionId: 's1', cwd: '/repo' }, deps());
+  assert.equal(response.sessionWarning, null);
+});
 
 test('runCheck falls back to searchCode when no manifest/feature matches are found', async () => {
   const searchCode = async () => [{ path: 'src/legacy/report.js', symbol: 'renderReport', kind: 'function' }];

@@ -7,9 +7,12 @@
 // here — bin/ctx-gate.js reads answersLog/sessionCache/manifest first and
 // writes back whatever this returns.
 
+const { emptySessionState } = require('../memory/schema');
+
 const PROMOTION_THRESHOLD = 3;
 const KEYWORD_MIN_LENGTH = 4;
 const KEYWORD_MAX_COUNT = 5;
+const SESSION_STATE_TTL_DAYS = 7;
 
 function deriveKeywords(prompt) {
   const words = (prompt || '')
@@ -106,4 +109,59 @@ function recordAndPromote(request, deps = {}) {
   return { answerEntry, learnedPatch };
 }
 
-module.exports = { PROMOTION_THRESHOLD, recordAndPromote };
+/**
+ * Session cost tracking — advances .context-ops/state/<sessionId>.json by
+ * one turn. Pure: no file I/O here, bin/ctx-gate.js reads the existing
+ * state and the bytes-read estimate (via fs.statSync on filesTouched)
+ * before calling this, then writes back whatever is returned.
+ *
+ * @param {Object|null} existingState - prior state for this session, or null
+ * @param {{ sessionId: string, timestamp: string, filesTouched?: string[], bytesRead?: number }} event
+ * @returns {Object} updated session state
+ */
+function updateSessionState(existingState, event) {
+  const state = existingState
+    ? {
+        ...existingState,
+        filesRead: [...existingState.filesRead],
+        fileReadCounts: { ...existingState.fileReadCounts },
+      }
+    : emptySessionState(event.sessionId, event.timestamp);
+
+  state.turnCount += 1;
+  state.estimatedBytesRead += event.bytesRead || 0;
+  state.lastSeenAt = event.timestamp;
+
+  for (const file of event.filesTouched || []) {
+    if (!state.filesRead.includes(file)) {
+      state.filesRead.push(file);
+    }
+    state.fileReadCounts[file] = (state.fileReadCounts[file] || 0) + 1;
+  }
+
+  return state;
+}
+
+/**
+ * @param {{ sessionId: string, state: Object }[]} sessionStates - as returned by store.listSessionStates
+ * @param {Date} now
+ * @param {number} [ttlDays]
+ * @returns {string[]} sessionIds whose state is stale enough to delete
+ */
+function findStaleSessionStates(sessionStates, now, ttlDays = SESSION_STATE_TTL_DAYS) {
+  return sessionStates
+    .filter(({ state }) => {
+      if (!state || !state.lastSeenAt) return true;
+      const ageDays = (now - new Date(state.lastSeenAt)) / (1000 * 60 * 60 * 24);
+      return ageDays >= ttlDays;
+    })
+    .map(({ sessionId }) => sessionId);
+}
+
+module.exports = {
+  PROMOTION_THRESHOLD,
+  SESSION_STATE_TTL_DAYS,
+  recordAndPromote,
+  updateSessionState,
+  findStaleSessionStates,
+};

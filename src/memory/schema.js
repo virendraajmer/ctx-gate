@@ -20,6 +20,12 @@ const STANDING_STATUS = ['confirmed', 'detected', 'default'];
 
 const ENFORCEMENT_LEVELS = ['off', 'warn', 'block'];
 
+// Session cost-warning thresholds (see src/core/gate.js#estimateSessionCost).
+// These are heuristic cost-score units (turns weighted + bytes-read
+// weighted), not measured token counts.
+const DEFAULT_SESSION_WARN_AT = 6000;
+const DEFAULT_SESSION_WARN_HARD_AT = 15000;
+
 /**
  * @returns {Object} an empty manifest.json shape with every stack key present
  */
@@ -46,6 +52,9 @@ function defaultTeamConfig() {
     version: 1,
     enforcement: 'off',
     adapters: { active: 'copilot' },
+    sessionWarnAt: DEFAULT_SESSION_WARN_AT,
+    sessionWarnHardAt: DEFAULT_SESSION_WARN_HARD_AT,
+    sessionWarnings: true,
   };
 }
 
@@ -80,15 +89,36 @@ function emptyLearned() {
   return { version: 1, patterns: [] };
 }
 
+/**
+ * @param {string} sessionId
+ * @param {string} timestamp - ISO 8601
+ * @returns {Object} an empty .context-ops/state/<sessionId>.json shape
+ */
+function emptySessionState(sessionId, timestamp) {
+  return {
+    sessionId,
+    turnCount: 0,
+    filesRead: [],
+    fileReadCounts: {},
+    estimatedBytesRead: 0,
+    warningsEmitted: 0,
+    startedAt: timestamp,
+    lastSeenAt: timestamp,
+  };
+}
+
 module.exports = {
   MANIFEST_SCHEMA_VERSION,
   STANDING_SLOTS,
   STANDING_STATUS,
   ENFORCEMENT_LEVELS,
+  DEFAULT_SESSION_WARN_AT,
+  DEFAULT_SESSION_WARN_HARD_AT,
   emptyManifest,
   defaultTeamConfig,
   defaultLocalConfig,
   emptyStanding,
   emptyFeatures,
   emptyLearned,
+  emptySessionState,
 };

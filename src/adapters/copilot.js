@@ -38,9 +38,16 @@ function formatCheckOutput(checkResponse) {
   // userPromptSubmitted hook uses to inject extra context back into the
   // agent. Using `additionalContext` as a best guess.
   if (checkResponse.skipped) {
-    return { additionalContext: '' };
+    const lines = [];
+    if (checkResponse.sessionWarning) {
+      lines.push(checkResponse.sessionWarning.message);
+    }
+    return { additionalContext: lines.join('\n') };
   }
   const lines = [];
+  if (checkResponse.sessionWarning) {
+    lines.push(checkResponse.sessionWarning.message);
+  }
   if (checkResponse.warningLevel === 'warn') {
     lines.push('This request looks underspecified — proceeding anyway.');
   }

@@ -17,6 +17,40 @@ function memoryDir(repoRoot) {
   return path.join(contextOpsDir(repoRoot), 'memory');
 }
 
+function stateDir(repoRoot) {
+  return path.join(contextOpsDir(repoRoot), 'state');
+}
+
+// Comments explaining the session-warning keys, spliced into the dumped
+// config.yml text below since js-yaml has no way to attach comments to
+// values it writes. Keyed by the exact top-level key name.
+const CONFIG_YML_COMMENTS = {
+  sessionWarnAt:
+    '# Soft long-session warning threshold (heuristic cost-score units — turns\n' +
+    '# weighted plus bytes read, not a measured token count). Crossing it nudges\n' +
+    '# once per session to consider starting a fresh chat.',
+  sessionWarnHardAt:
+    '# Firm long-session warning threshold, same units as sessionWarnAt. Fires at\n' +
+    '# most once more per session after the soft warning.',
+  sessionWarnings:
+    '# Set to false to disable the long-session cost warning entirely.',
+};
+
+/**
+ * Splices human-readable comments above the keys in CONFIG_YML_COMMENTS.
+ * A no-op for any key not present in the dumped text.
+ *
+ * @param {string} yamlText
+ * @returns {string}
+ */
+function annotateTeamConfigYaml(yamlText) {
+  let out = yamlText;
+  for (const [key, comment] of Object.entries(CONFIG_YML_COMMENTS)) {
+    out = out.replace(new RegExp(`^${key}:`, 'm'), `${comment}\n${key}:`);
+  }
+  return out;
+}
+
 /** @param {string} repoRoot @returns {Object} */
 function readManifest(repoRoot) {
   const p = path.join(contextOpsDir(repoRoot), 'manifest.json');
@@ -109,7 +143,7 @@ function readConfig(repoRoot) {
 function writeTeamConfig(repoRoot, config) {
   const dir = contextOpsDir(repoRoot);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'config.yml'), yaml.dump(config), 'utf8');
+  fs.writeFileSync(path.join(dir, 'config.yml'), annotateTeamConfigYaml(yaml.dump(config)), 'utf8');
 }
 
 /** @param {string} repoRoot @param {Object} config */
@@ -201,6 +235,71 @@ function writeSessionCache(repoRoot, cache) {
   fs.writeFileSync(path.join(dir, 'session-cache.json'), JSON.stringify(cache, null, 2), 'utf8');
 }
 
+function sessionStatePath(repoRoot, sessionId) {
+  const safeId = String(sessionId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(stateDir(repoRoot), `${safeId}.json`);
+}
+
+/**
+ * Ephemeral, gitignored per-session cost-tracking snapshot (see
+ * src/core/learn.js#updateSessionState / src/core/gate.js#evaluateSessionWarning).
+ *
+ * @param {string} repoRoot
+ * @param {string} sessionId
+ * @returns {Object|null} null if no state file exists yet for this session.
+ *   Throws (JSON.parse) if the file exists but is corrupt — callers on the
+ *   hook path are expected to catch, log, and continue (see bin/ctx-gate.js).
+ */
+function readSessionState(repoRoot, sessionId) {
+  const p = sessionStatePath(repoRoot, sessionId);
+  if (!fs.existsSync(p)) {
+    return null;
+  }
+  return JSON.parse(fs.readFileSync(p, 'utf8'));
+}
+
+/** @param {string} repoRoot @param {string} sessionId @param {Object} state */
+function writeSessionState(repoRoot, sessionId, state) {
+  const dir = stateDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(sessionStatePath(repoRoot, sessionId), JSON.stringify(state, null, 2), 'utf8');
+}
+
+/**
+ * Lists every session state file. Corrupt files are skipped rather than
+ * thrown, since this is an aggregate read used only by `ctx-gate stats`
+ * and the learn.js 7-day cleanup sweep — never on the gate.js hook path.
+ *
+ * @param {string} repoRoot
+ * @returns {{ sessionId: string, state: Object }[]}
+ */
+function listSessionStates(repoRoot) {
+  const dir = stateDir(repoRoot);
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  const entries = [];
+  for (const filename of fs.readdirSync(dir)) {
+    if (!filename.endsWith('.json')) continue;
+    try {
+      const state = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'));
+      entries.push({ sessionId: filename.slice(0, -'.json'.length), state });
+    } catch {
+      // skip corrupt state files during aggregate listing
+    }
+  }
+  return entries;
+}
+
+/** @param {string} repoRoot @param {string} sessionId */
+function deleteSessionStateFile(repoRoot, sessionId) {
+  try {
+    fs.unlinkSync(sessionStatePath(repoRoot, sessionId));
+  } catch {
+    // already gone / never existed — deletion is best-effort
+  }
+}
+
 module.exports = {
   readManifest,
   writeManifest,
@@ -218,4 +317,8 @@ module.exports = {
   readAnswersLog,
   readSessionCache,
   writeSessionCache,
+  readSessionState,
+  writeSessionState,
+  listSessionStates,
+  deleteSessionStateFile,
 };

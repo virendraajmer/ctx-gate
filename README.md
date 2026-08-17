@@ -102,6 +102,31 @@ index — after that its background watcher keeps itself fresh.
 Sets your own personal override in `.context-ops/config.local.yml`
 (gitignored, never committed on your behalf). See below.
 
+### `ctx-gate stats`
+
+Manual command. Copilot resends the whole conversation on every turn, so
+a long chat session costs non-linearly — `check` nudges you about this in
+context (see [Long-session cost warning](#long-session-cost-warning)
+below), and `stats` reports the numbers behind it: median/max turns per
+session this week, how many sessions crossed each warning threshold, and
+which files get re-read most often across sessions (a signal that `check`
+or the optimizer's generated context is missing something those tasks
+needed). Every number is either read directly from local state or run
+through the real tokenizer in `src/tokenBudget.js` — anything that can't
+be measured prints `not measured`, never a guess.
+
+## Long-session cost warning
+
+`learn` tracks a per-session cost snapshot in `.context-ops/state/` (turn
+count, files read, estimated bytes read) — gitignored, pruned after 7
+days. `check` reads it on every prompt and, at most twice per session,
+adds a note explaining that each new message is now resending the whole
+prior conversation and suggesting you start a fresh chat for your next
+task. It can only advise — nothing in ctx-gate can open, close, or clear
+a chat for you. Tune or disable it via `sessionWarnAt` / `sessionWarnHardAt`
+/ `sessionWarnings` in `.context-ops/config.yml` (documented inline where
+they're generated).
+
 ## Enforcement levels
 
 Enforcement has three levels: `off` < `warn` < `block`. The **team
@@ -125,10 +150,11 @@ never centralized, never shared across repos.
 | `memory/standing.yml` | yes | Answers to the standing questions (what "done" means, high-risk paths, error-handling/naming/logging conventions) — confirmed by a human, or auto-detected where possible. |
 | `memory/features.yml` | yes | Business words your team uses mapped to specific folders (e.g. "sorting" → `src/utils/sort.js`), so `check` can resolve vague requests. |
 | `memory/learned.yml` | yes | Patterns promoted by `ctx-gate learn` once the same clarification has come up 3 times — starts empty. |
-| `config.yml` | yes | Team enforcement level + which agent adapter is active. |
+| `config.yml` | yes | Team enforcement level + which agent adapter is active + session-warning thresholds. |
 | `memory/answers.jsonl` | no (gitignored) | Raw append-only log every `learn` call writes to, used to compute promotion — not curated, so not committed. |
 | `config.local.yml` | no (gitignored) | Your personal enforcement override, written by `ctx-gate enforce <level>`. |
 | `logs/` | no (gitignored) | `ctx-gate.log` (hook errors) and `session-cache.json` (short-lived per-session state shared between `check`/`learn`/`enforce`, since each hook fires as a separate process) — ephemeral, derived, never curated memory. |
+| `state/<sessionId>.json` | no (gitignored) | Per-session cost snapshot (turn count, files read, estimated bytes read) written by `learn`, read by `check` for the [long-session warning](#long-session-cost-warning) and by `ctx-gate stats`. Pruned after 7 days. |
 
 ## Architecture
 

@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { recordAndPromote } = require('../../src/core/learn');
+const { recordAndPromote, updateSessionState, findStaleSessionStates } = require('../../src/core/learn');
 
 const manifest = {
   stacks: {
@@ -77,6 +77,91 @@ test('recordAndPromote promotes to learned.yml at exactly 3 occurrences', () => 
   assert.equal(third.learnedPatch.occurrences, 3);
   assert.deepEqual(third.learnedPatch.suggestion, { screen: 'Orders' });
   assert.equal(third.learnedPatch.confidence, 'learned');
+});
+
+// --- updateSessionState -------------------------------------------------
+
+test('updateSessionState initializes fresh state on the first turn', () => {
+  const state = updateSessionState(null, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    filesTouched: ['src/a.js', 'src/b.js'],
+    bytesRead: 1000,
+  });
+  assert.equal(state.sessionId, 's1');
+  assert.equal(state.turnCount, 1);
+  assert.equal(state.estimatedBytesRead, 1000);
+  assert.deepEqual(state.filesRead, ['src/a.js', 'src/b.js']);
+  assert.deepEqual(state.fileReadCounts, { 'src/a.js': 1, 'src/b.js': 1 });
+  assert.equal(state.warningsEmitted, 0);
+  assert.equal(state.startedAt, '2026-01-01T00:00:00.000Z');
+  assert.equal(state.lastSeenAt, '2026-01-01T00:00:00.000Z');
+});
+
+test('updateSessionState accumulates turns/bytes and dedupes filesRead across turns', () => {
+  const first = updateSessionState(null, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    filesTouched: ['src/a.js'],
+    bytesRead: 500,
+  });
+  const second = updateSessionState(first, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:05:00.000Z',
+    filesTouched: ['src/a.js', 'src/c.js'],
+    bytesRead: 500,
+  });
+
+  assert.equal(second.turnCount, 2);
+  assert.equal(second.estimatedBytesRead, 1000);
+  assert.deepEqual(second.filesRead, ['src/a.js', 'src/c.js']);
+  assert.deepEqual(second.fileReadCounts, { 'src/a.js': 2, 'src/c.js': 1 });
+  assert.equal(second.lastSeenAt, '2026-01-01T00:05:00.000Z');
+});
+
+test('updateSessionState does not mutate the existing state object it was given', () => {
+  const original = updateSessionState(null, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    filesTouched: ['src/a.js'],
+    bytesRead: 500,
+  });
+  const snapshot = JSON.parse(JSON.stringify(original));
+
+  updateSessionState(original, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:05:00.000Z',
+    filesTouched: ['src/a.js', 'src/b.js'],
+    bytesRead: 500,
+  });
+
+  assert.deepEqual(original, snapshot);
+});
+
+// --- findStaleSessionStates -------------------------------------------------
+
+test('findStaleSessionStates flags sessions unseen for 7+ days and keeps recent ones', () => {
+  const now = new Date('2026-01-10T00:00:00.000Z');
+  const sessionStates = [
+    { sessionId: 'old', state: { lastSeenAt: '2026-01-01T00:00:00.000Z' } }, // 9 days old
+    { sessionId: 'boundary', state: { lastSeenAt: '2026-01-03T00:00:00.000Z' } }, // exactly 7 days old
+    { sessionId: 'recent', state: { lastSeenAt: '2026-01-09T00:00:00.000Z' } }, // 1 day old
+  ];
+  const stale = findStaleSessionStates(sessionStates, now);
+  assert.deepEqual(stale.sort(), ['boundary', 'old']);
+});
+
+test('findStaleSessionStates treats a missing lastSeenAt as stale', () => {
+  const now = new Date('2026-01-10T00:00:00.000Z');
+  const stale = findStaleSessionStates([{ sessionId: 'broken', state: {} }], now);
+  assert.deepEqual(stale, ['broken']);
+});
+
+test('findStaleSessionStates respects a custom ttlDays', () => {
+  const now = new Date('2026-01-10T00:00:00.000Z');
+  const sessionStates = [{ sessionId: 's1', state: { lastSeenAt: '2026-01-09T00:00:00.000Z' } }]; // 1 day old
+  assert.deepEqual(findStaleSessionStates(sessionStates, now, 1), ['s1']);
+  assert.deepEqual(findStaleSessionStates(sessionStates, now, 2), []);
 });
 
 test('recordAndPromote falls back to a bare file suggestion when the touched file matches no screen', () => {

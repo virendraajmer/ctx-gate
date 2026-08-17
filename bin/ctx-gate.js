@@ -50,6 +50,21 @@ function logHookError(repoRoot, command, err) {
   }
 }
 
+// Best-effort byte-size estimate for the session cost tracker (see
+// src/core/learn.js#updateSessionState) — missing/unreadable files simply
+// contribute 0, never throw.
+function sumFileSizes(repoRoot, filesTouched) {
+  let total = 0;
+  for (const file of filesTouched || []) {
+    try {
+      total += fs.statSync(path.join(repoRoot, file)).size;
+    } catch {
+      // best-effort only
+    }
+  }
+  return total;
+}
+
 function resolveAdapterName() {
   // --agent flag > CTX_GATE_AGENT env > config.yml#adapters.active > default
   const flagIndex = process.argv.indexOf('--agent');
@@ -132,6 +147,24 @@ async function main(argv) {
 
         const sessionCache = store.readSessionCache(repoRoot);
 
+        const { team } = store.readConfig(repoRoot);
+        const schema = require('../src/memory/schema');
+        const sessionConfig = {
+          sessionWarnAt: (team && team.sessionWarnAt) ?? schema.DEFAULT_SESSION_WARN_AT,
+          sessionWarnHardAt: (team && team.sessionWarnHardAt) ?? schema.DEFAULT_SESSION_WARN_HARD_AT,
+          sessionWarnings: team && typeof team.sessionWarnings === 'boolean' ? team.sessionWarnings : true,
+        };
+
+        // A corrupt session-state file must never break the rest of the
+        // check — log it and proceed as if no session state exists.
+        let sessionState = null;
+        try {
+          sessionState = store.readSessionState(repoRoot, request.sessionId);
+        } catch (err) {
+          logHookError(repoRoot, 'check', err);
+          sessionState = null;
+        }
+
         const response = await runCheck(request, {
           manifest,
           standing: standing || { entries: [] },
@@ -139,6 +172,8 @@ async function main(argv) {
           features: features || { mappings: [] },
           searchCode,
           sessionCache,
+          sessionState,
+          config: sessionConfig,
         });
 
         if (!response.skipped) {
@@ -151,6 +186,15 @@ async function main(argv) {
             matches: response.matches,
           };
           store.writeSessionCache(repoRoot, sessionCache);
+        }
+
+        if (response.sessionWarning && sessionState) {
+          sessionState.warningsEmitted = response.sessionWarning.warningsEmittedAfter;
+          try {
+            store.writeSessionState(repoRoot, request.sessionId, sessionState);
+          } catch (err) {
+            logHookError(repoRoot, 'check', err);
+          }
         }
 
         process.stdout.write(`${JSON.stringify(adapter.formatCheckOutput(response))}\n`);
@@ -192,6 +236,38 @@ async function main(argv) {
             learned.patterns[idx] = learnedPatch;
           }
           store.writeLearned(repoRoot, learned);
+        }
+
+        // Session cost tracking. Isolated in its own try/catch so a
+        // corrupt state file logs and is skipped without undoing the
+        // answers.jsonl/learned.yml writes above.
+        try {
+          const { updateSessionState, findStaleSessionStates } = require('../src/core/learn');
+
+          let existingState = null;
+          try {
+            existingState = store.readSessionState(repoRoot, request.sessionId);
+          } catch (err) {
+            logHookError(repoRoot, 'learn', err);
+            existingState = null;
+          }
+
+          const bytesRead = sumFileSizes(repoRoot, request.filesTouched);
+          const newState = updateSessionState(existingState, {
+            sessionId: request.sessionId,
+            timestamp: request.timestamp,
+            filesTouched: request.filesTouched,
+            bytesRead,
+          });
+          store.writeSessionState(repoRoot, request.sessionId, newState);
+
+          const allStates = store.listSessionStates(repoRoot);
+          const staleIds = findStaleSessionStates(allStates, new Date(request.timestamp));
+          for (const staleId of staleIds) {
+            store.deleteSessionStateFile(repoRoot, staleId);
+          }
+        } catch (err) {
+          logHookError(repoRoot, 'learn', err);
         }
       } catch (err) {
         logHookError(repoRoot, 'learn', err);
@@ -286,6 +362,39 @@ async function main(argv) {
       }
       if (!write) {
         process.stdout.write('ctx-gate: diff-preview only — re-run with --write to apply.\n');
+      }
+      return;
+    }
+    case 'stats': {
+      // Manual command, not a hook — safe to scan the whole state
+      // directory here (unlike gate.js/learn.js on the hook path).
+      const store = require('../src/memory/store');
+      const { countTokens } = require('../src/tokenBudget');
+      const { STATS_WINDOW_DAYS, computeSessionStats } = require('../src/core/stats');
+      const repoRoot = process.cwd();
+
+      const states = store.listSessionStates(repoRoot).map((entry) => entry.state);
+      const report = computeSessionStats(states);
+
+      process.stdout.write(`ctx-gate stats — last ${STATS_WINDOW_DAYS} days\n`);
+      process.stdout.write(`Sessions: ${report.sessionsThisWeek}\n`);
+      process.stdout.write(`Median turns: ${report.medianTurns === null ? 'not measured' : report.medianTurns}\n`);
+      process.stdout.write(`Max turns: ${report.maxTurns === null ? 'not measured' : report.maxTurns}\n`);
+      process.stdout.write(`Sessions that crossed the soft warning threshold: ${report.sessionsCrossedSoft}\n`);
+      process.stdout.write(`Sessions that crossed the firm warning threshold: ${report.sessionsCrossedHard}\n`);
+      process.stdout.write('Most re-read files:\n');
+      if (report.mostReread.length === 0) {
+        process.stdout.write('  (none)\n');
+      }
+      for (const entry of report.mostReread) {
+        let tokenLabel = 'not measured';
+        try {
+          const content = fs.readFileSync(path.join(repoRoot, entry.file), 'utf8');
+          tokenLabel = `${countTokens(content)} tokens (current file content, measured)`;
+        } catch {
+          tokenLabel = 'not measured';
+        }
+        process.stdout.write(`  - ${entry.file} — read ${entry.totalReads}x — ${tokenLabel}\n`);
       }
       return;
     }

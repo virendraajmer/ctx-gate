@@ -7,6 +7,25 @@
 
 const SHORT_FOLLOWUP_WORD_LIMIT = 4;
 
+// Heuristic weights for combining turnCount and estimatedBytesRead into one
+// comparable cost score (see estimateSessionCost) — five turns that read
+// large files should outrank fifteen short exchanges, so turn count alone
+// isn't enough. These are NOT measured token counts; ctx-gate stats never
+// reports this score as a token figure.
+const SESSION_COST_TOKENS_PER_TURN = 50;
+const SESSION_COST_BYTES_PER_TOKEN_ESTIMATE = 4;
+
+const SESSION_WARNING_MESSAGES = {
+  soft:
+    'ctx-gate: this chat session has grown long. Copilot resends the full conversation history on every ' +
+    "turn, so each new message here now pays for everything before it. Consider starting a fresh chat for " +
+    "your next task — ctx-gate can only advise; it can't open, close, or clear a chat for you.",
+  hard:
+    'ctx-gate: this chat session is now expensive — every message keeps resending a long history behind it. ' +
+    "Strongly consider wrapping up and starting a new chat for the next task. ctx-gate can only advise; it " +
+    "can't open, close, or clear a chat for you.",
+};
+
 // Short-circuits acknowledgment-style follow-ups ("yes", "ok continue") —
 // deliberately NOT any prompt under the word limit, since real short
 // imperatives ("add validation") still need full analysis. Combined with
@@ -204,6 +223,49 @@ function buildStandingNotes(prompt, unknown, matches, standing) {
 }
 
 /**
+ * Combines turnCount and estimatedBytesRead into one comparable cost score.
+ * Heuristic only — see the weight constants above.
+ *
+ * @param {Object|null} state - session state, or null/absent
+ * @returns {number}
+ */
+function estimateSessionCost(state) {
+  if (!state) return 0;
+  const turnCost = (state.turnCount || 0) * SESSION_COST_TOKENS_PER_TURN;
+  const bytesCost = Math.round((state.estimatedBytesRead || 0) / SESSION_COST_BYTES_PER_TOKEN_ESTIMATE);
+  return turnCost + bytesCost;
+}
+
+/**
+ * Decides whether to emit a long-session cost warning this turn. Emits at
+ * most two per session (tracked via state.warningsEmitted): one soft, one
+ * firmer. If the very first evaluation already crosses the hard threshold,
+ * skips straight to the firm warning and consumes both slots at once.
+ *
+ * @param {Object|null} state - session state from .context-ops/state/<sessionId>.json
+ * @param {Object|undefined} config - { sessionWarnAt, sessionWarnHardAt, sessionWarnings }
+ * @returns {{ level: 'soft'|'hard', message: string, warningsEmittedAfter: number }|null}
+ */
+function evaluateSessionWarning(state, config) {
+  if (!state || !config || config.sessionWarnings === false) {
+    return null;
+  }
+  const emitted = state.warningsEmitted || 0;
+  if (emitted >= 2) {
+    return null;
+  }
+  const cost = estimateSessionCost(state);
+
+  if (cost >= config.sessionWarnHardAt) {
+    return { level: 'hard', message: SESSION_WARNING_MESSAGES.hard, warningsEmittedAfter: 2 };
+  }
+  if (emitted < 1 && cost >= config.sessionWarnAt) {
+    return { level: 'soft', message: SESSION_WARNING_MESSAGES.soft, warningsEmittedAfter: 1 };
+  }
+  return null;
+}
+
+/**
  * @param {Object} parts
  * @returns {import('../adapters/types').CheckResponse}
  */
@@ -218,6 +280,7 @@ function composeResponse(parts) {
       vagueTermsFound: [],
       questions: [],
       warningLevel: 'off',
+      sessionWarning: parts.sessionWarning || null,
     };
   }
 
@@ -246,6 +309,7 @@ function composeResponse(parts) {
     vagueTermsFound: unknown.vagueTerms,
     questions,
     warningLevel: warningLevel || 'off',
+    sessionWarning: parts.sessionWarning || null,
   };
 }
 
@@ -256,10 +320,12 @@ function composeResponse(parts) {
  */
 async function runCheck(request, deps) {
   const { prompt, sessionId } = request;
-  const { manifest, standing, learned, features, searchCode, sessionCache } = deps;
+  const { manifest, standing, learned, features, searchCode, sessionCache, sessionState, config } = deps;
+
+  const sessionWarning = evaluateSessionWarning(sessionState, config);
 
   if (isShortFollowUp(prompt, sessionCache, sessionId)) {
-    return composeResponse({ skipped: true });
+    return composeResponse({ skipped: true, sessionWarning });
   }
 
   const entityMatches = extractMentionedEntities(prompt, manifest);
@@ -289,7 +355,7 @@ async function runCheck(request, deps) {
 
   const warningLevel = unknown.scope || unknown.acceptance || unknown.vagueTerms.length > 0 ? 'warn' : 'off';
 
-  return composeResponse({ skipped: false, matches, standingNotes, learnedSuggestions, unknown, warningLevel });
+  return composeResponse({ skipped: false, matches, standingNotes, learnedSuggestions, unknown, warningLevel, sessionWarning });
 }
 
 module.exports = {
@@ -300,6 +366,8 @@ module.exports = {
   matchFeatures,
   matchLearned,
   identifyUnknownSlots,
+  estimateSessionCost,
+  evaluateSessionWarning,
   composeResponse,
   runCheck,
 };

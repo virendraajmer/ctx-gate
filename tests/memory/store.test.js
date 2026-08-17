@@ -163,6 +163,95 @@ test('ensureGitignoreEntries creates .gitignore with the given entries when abse
   }
 });
 
+test('readSessionState returns null before writeSessionState is ever called', () => {
+  const dir = tmpRepo();
+  try {
+    assert.equal(store.readSessionState(dir, 's1'), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeSessionState/readSessionState round-trip through JSON', () => {
+  const dir = tmpRepo();
+  try {
+    const state = {
+      sessionId: 's1',
+      turnCount: 3,
+      filesRead: ['src/a.js'],
+      fileReadCounts: { 'src/a.js': 3 },
+      estimatedBytesRead: 1500,
+      warningsEmitted: 0,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      lastSeenAt: '2026-01-01T00:10:00.000Z',
+    };
+    store.writeSessionState(dir, 's1', state);
+    assert.deepEqual(store.readSessionState(dir, 's1'), state);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readSessionState throws on a corrupt state file so the hook-path caller can log and continue', () => {
+  const dir = tmpRepo();
+  try {
+    fs.mkdirSync(path.join(dir, '.context-ops', 'state'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.context-ops', 'state', 's1.json'), '{ not valid json', 'utf8');
+    assert.throws(() => store.readSessionState(dir, 's1'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('listSessionStates skips corrupt state files instead of throwing', () => {
+  const dir = tmpRepo();
+  try {
+    store.writeSessionState(dir, 's1', { sessionId: 's1', turnCount: 1 });
+    fs.writeFileSync(path.join(dir, '.context-ops', 'state', 's2.json'), '{ not valid json', 'utf8');
+    const entries = store.listSessionStates(dir);
+    assert.deepEqual(
+      entries.map((e) => e.sessionId),
+      ['s1']
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('listSessionStates returns [] when the state directory does not exist', () => {
+  const dir = tmpRepo();
+  try {
+    assert.deepEqual(store.listSessionStates(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('deleteSessionStateFile removes the file and is a no-op if already gone', () => {
+  const dir = tmpRepo();
+  try {
+    store.writeSessionState(dir, 's1', { sessionId: 's1', turnCount: 1 });
+    store.deleteSessionStateFile(dir, 's1');
+    assert.equal(store.readSessionState(dir, 's1'), null);
+    assert.doesNotThrow(() => store.deleteSessionStateFile(dir, 's1'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeTeamConfig annotates the session-warning keys with explanatory comments', () => {
+  const dir = tmpRepo();
+  try {
+    const schema = require('../../src/memory/schema');
+    store.writeTeamConfig(dir, schema.defaultTeamConfig());
+    const onDisk = fs.readFileSync(path.join(dir, '.context-ops', 'config.yml'), 'utf8');
+    assert.match(onDisk, /# Soft long-session warning threshold[\s\S]*sessionWarnAt:/);
+    assert.match(onDisk, /# Set to false to disable the long-session cost warning entirely\.\nsessionWarnings:/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('ensureGitignoreEntries is idempotent and preserves existing lines', () => {
   const dir = tmpRepo();
   try {

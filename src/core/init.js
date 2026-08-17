@@ -81,6 +81,7 @@ async function init(repoRoot, opts = {}) {
     '.context-ops/memory/answers.jsonl',
     '.context-ops/config.local.yml',
     '.context-ops/logs/',
+    '.context-ops/state/',
   ]);
 
   const mcpAvailable = codebaseMemoryClient.isAvailable();
