@@ -1,0 +1,20 @@
+{
+  "name": "ctx-gate",
+  "version": "0.1.0",
+  "description": "Company-wide context optimizer and zero-LLM requirement gate for AI coding agents",
+  "type": "commonjs",
+  "bin": {
+    "ctx-gate": "./bin/ctx-gate.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\""
+  },
+  "dependencies": {
+    "gpt-tokenizer": "^2.1.2",
+    "diff": "^5.2.0"
+  },
+  "license": "MIT"
+}

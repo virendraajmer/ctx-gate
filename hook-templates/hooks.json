@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "~/.ctx-gate/current/bin/ctx-gate check",
+        "powershell": "~/.ctx-gate/current/bin/ctx-gate.ps1 check",
+        "timeout": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "~/.ctx-gate/current/bin/ctx-gate learn",
+        "powershell": "~/.ctx-gate/current/bin/ctx-gate.ps1 learn",
+        "timeout": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "~/.ctx-gate/current/bin/ctx-gate enforce",
+        "powershell": "~/.ctx-gate/current/bin/ctx-gate.ps1 enforce",
+        "timeout": 10
+      }
+    ]
+  }
+}
