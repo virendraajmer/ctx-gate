@@ -94,7 +94,7 @@ async function main(argv) {
       const {
         manifest,
         standing,
-        features,
+        glossary,
         learned,
         mcpAvailable,
         mcpGuidance,
@@ -107,8 +107,8 @@ async function main(argv) {
       process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
       process.stdout.write('ctx-gate: wrote .context-ops/memory/standing.yml\n');
       process.stdout.write(`${JSON.stringify(standing, null, 2)}\n`);
-      process.stdout.write('ctx-gate: wrote .context-ops/memory/features.yml\n');
-      process.stdout.write(`${JSON.stringify(features, null, 2)}\n`);
+      process.stdout.write('ctx-gate: wrote .context-ops/memory/glossary.yml\n');
+      process.stdout.write(`${JSON.stringify(glossary, null, 2)}\n`);
       process.stdout.write('ctx-gate: wrote .context-ops/memory/learned.yml\n');
       process.stdout.write(`${JSON.stringify(learned, null, 2)}\n`);
       process.stdout.write(`ctx-gate: wrote ${path.relative(repoRoot, hooksPath).replace(/\\/g, '/')}\n`);
@@ -310,7 +310,8 @@ async function main(argv) {
       try {
         const store = require('../src/memory/store');
         const { resolveAdapter } = require('../src/adapters');
-        const { runCheck } = require('../src/core/gate');
+        const { runCheck, extractCandidateJargonTerms } = require('../src/core/gate');
+        const { collectRepoSymbolNames } = require('../src/core/glossary');
         const codebaseMemoryClient = require('../src/mcp/codebaseMemoryClient');
         const textSearchFallback = require('../src/mcp/textSearchFallback');
 
@@ -320,7 +321,7 @@ async function main(argv) {
 
         const manifest = store.readManifest(repoRoot);
         const standing = store.readStanding(repoRoot);
-        const features = store.readFeatures(repoRoot);
+        const glossary = store.readGlossary(repoRoot);
         let learned;
         try {
           learned = store.readLearned(repoRoot);
@@ -336,10 +337,12 @@ async function main(argv) {
 
         const { team } = store.readConfig(repoRoot);
         const schema = require('../src/memory/schema');
+        const { isHandoffInstalled } = require('../src/core/agentPack');
         const sessionConfig = {
           sessionWarnAt: (team && team.sessionWarnAt) ?? schema.DEFAULT_SESSION_WARN_AT,
           sessionWarnHardAt: (team && team.sessionWarnHardAt) ?? schema.DEFAULT_SESSION_WARN_HARD_AT,
           sessionWarnings: team && typeof team.sessionWarnings === 'boolean' ? team.sessionWarnings : true,
+          handoffInstalled: isHandoffInstalled(repoRoot),
         };
 
         // A corrupt session-state file must never break the rest of the
@@ -352,15 +355,25 @@ async function main(argv) {
           sessionState = null;
         }
 
+        // Only walked when this prompt actually contains candidate jargon —
+        // the vast majority of prompts don't, and this hook must stay fast.
+        const jargonCandidates = extractCandidateJargonTerms(request.prompt);
+        const knownSymbolNames = jargonCandidates.length > 0 ? collectRepoSymbolNames(repoRoot) : new Set();
+        const unknownTermsState = store.readUnknownTerms(repoRoot);
+        const now = new Date().toISOString();
+
         const response = await runCheck(request, {
           manifest,
           standing: standing || { entries: [] },
           learned: learned || { patterns: [] },
-          features: features || { mappings: [] },
+          glossary: glossary || { terms: [] },
           searchCode,
           sessionCache,
           sessionState,
           config: sessionConfig,
+          knownSymbolNames,
+          unknownTermsState,
+          now,
         });
 
         if (!response.skipped) {
@@ -373,6 +386,11 @@ async function main(argv) {
             matches: response.matches,
           };
           store.writeSessionCache(repoRoot, sessionCache);
+          try {
+            store.writeUnknownTerms(repoRoot, response.unknownTermsStateAfter);
+          } catch (err) {
+            logHookError(repoRoot, 'check', err);
+          }
         }
 
         if (response.sessionWarning && sessionState) {
@@ -424,7 +442,7 @@ async function main(argv) {
           manifest = { stacks: {}, endpoints: [] };
         }
 
-        const { answerEntry, learnedPatch } = recordAndPromote(request, { answersLog, sessionCache, manifest });
+        const { answerEntry, learnedPatch, glossaryPatch } = recordAndPromote(request, { answersLog, sessionCache, manifest });
         store.appendAnswerLine(repoRoot, answerEntry);
 
         if (learnedPatch) {
@@ -436,6 +454,22 @@ async function main(argv) {
             learned.patterns[idx] = learnedPatch;
           }
           store.writeLearned(repoRoot, learned);
+        }
+
+        // Never overwrites a term the developer already confirmed or is
+        // still deciding on — this promotion only ever adds a brand-new
+        // candidate, matching the addon-6 "developer confirms it" contract.
+        if (glossaryPatch) {
+          try {
+            const glossary = store.readGlossary(repoRoot) || { version: 1, terms: [] };
+            const exists = glossary.terms.some((t) => t.term.toLowerCase() === glossaryPatch.term.toLowerCase());
+            if (!exists) {
+              glossary.terms.push(glossaryPatch);
+              store.writeGlossary(repoRoot, glossary);
+            }
+          } catch (err) {
+            logHookError(repoRoot, 'learn', err);
+          }
         }
 
         // Session cost tracking. Isolated in its own try/catch so a
@@ -517,39 +551,19 @@ async function main(argv) {
       return;
     }
     case 'configure': {
-      const { listConfigurable, setStandingAnswer, setFeatureMapping } = require('../src/core/configure');
+      const { listConfigurable, setStandingAnswer } = require('../src/core/configure');
       const repoRoot = process.cwd();
 
       if (rest.length === 0) {
-        const { standing, features } = listConfigurable(repoRoot);
+        const { standing } = listConfigurable(repoRoot);
         process.stdout.write('ctx-gate: configurable answers for this repo (.context-ops/memory/standing.yml)\n\n');
         for (const row of standing) {
           const value = row.value || '(blank)';
           process.stdout.write(`  ${row.id.padEnd(22)} ${value.padEnd(35)} [${row.status}]\n`);
         }
-        process.stdout.write('\nctx-gate: feature-word mappings (.context-ops/memory/features.yml)\n\n');
-        if (features.length === 0) {
-          process.stdout.write('  (none mapped)\n');
-        }
-        for (const row of features) {
-          process.stdout.write(`  ${row.word.padEnd(22)} ${row.paths.join(', ')}\n`);
-        }
         process.stdout.write('\nUsage: ctx-gate configure <id> <value>\n');
-        process.stdout.write('       ctx-gate configure feature <word> <path>\n');
         process.stdout.write('Example: ctx-gate configure logging-convention "use pino, one JSON line per request"\n');
-        process.stdout.write('Example: ctx-gate configure feature sorting src/utils/sort.js\n');
-        return;
-      }
-
-      if (rest[0] === 'feature') {
-        const [, word, folderPath] = rest;
-        if (!word || !folderPath) {
-          process.stderr.write('Usage: ctx-gate configure feature <word> <path>\n');
-          process.exitCode = 1;
-          return;
-        }
-        const mapping = setFeatureMapping(repoRoot, word, folderPath);
-        process.stdout.write(`ctx-gate: mapped "${mapping.word}" -> ${mapping.paths.join(', ')}\n`);
+        process.stdout.write('\nFor shared vocabulary, see `ctx-gate glossary add|list|review` instead.\n');
         return;
       }
 
@@ -567,6 +581,64 @@ async function main(argv) {
         process.stderr.write(`${err.message}\n`);
         process.exitCode = 1;
       }
+      return;
+    }
+    case 'glossary': {
+      const { addTerm, listTerms, reviewTerms } = require('../src/core/glossary');
+      const repoRoot = process.cwd();
+      const sub = rest[0];
+
+      if (sub === 'add') {
+        const [, term, ...definitionParts] = rest;
+        const definition = definitionParts.join(' ');
+        if (!term || !definition) {
+          process.stderr.write('Usage: ctx-gate glossary add <term> <definition>\n');
+          process.exitCode = 1;
+          return;
+        }
+        const entry = addTerm(repoRoot, term, definition);
+        process.stdout.write(`ctx-gate: defined "${entry.term}" — confirmed\n`);
+        return;
+      }
+
+      if (sub === 'list' || !sub) {
+        const terms = listTerms(repoRoot);
+        if (terms.length === 0) {
+          process.stdout.write('ctx-gate: glossary.yml has no terms yet — run `ctx-gate init` or `ctx-gate glossary add <term> <definition>`.\n');
+          return;
+        }
+        process.stdout.write('ctx-gate: glossary (.context-ops/memory/glossary.yml)\n\n');
+        for (const t of terms) {
+          const def = t.definition || '(no definition yet)';
+          process.stdout.write(`  ${t.term.padEnd(28)} [${t.status}]  ${def}\n`);
+        }
+        return;
+      }
+
+      if (sub === 'review') {
+        const { candidateTerms, unresolvedUnknownTerms } = reviewTerms(repoRoot);
+        if (candidateTerms.length === 0 && unresolvedUnknownTerms.length === 0) {
+          process.stdout.write('ctx-gate glossary review: nothing to review.\n');
+          return;
+        }
+        if (candidateTerms.length > 0) {
+          process.stdout.write('Candidate terms awaiting a definition:\n');
+          for (const t of candidateTerms) {
+            process.stdout.write(`  - ${t.term}${t.paths.length ? ` (${t.paths.join(', ')})` : ''}\n`);
+          }
+        }
+        if (unresolvedUnknownTerms.length > 0) {
+          process.stdout.write('Undefined terms seen across 3+ sessions, not yet in the glossary:\n');
+          for (const t of unresolvedUnknownTerms) {
+            process.stdout.write(`  - ${t.term} (${t.sessions} sessions)\n`);
+          }
+        }
+        process.stdout.write('Run `ctx-gate glossary add <term> <definition>` to confirm one, or edit glossary.yml by hand.\n');
+        return;
+      }
+
+      process.stderr.write(`Unknown "ctx-gate glossary" subcommand: ${sub}\nUsage: ctx-gate glossary add <term> <definition> | list | review\n`);
+      process.exitCode = 1;
       return;
     }
     case 'enforce': {
@@ -717,6 +789,7 @@ async function main(argv) {
       process.stdout.write(`Sessions that crossed the soft warning threshold: ${report.sessionsCrossedSoft}\n`);
       process.stdout.write(`Sessions that crossed the firm warning threshold: ${report.sessionsCrossedHard}\n`);
       process.stdout.write(`Pipeline-orchestrated turns (agent-pack sub-agent prompts, excluded from turn medians above): ${report.pipelineTurns}\n`);
+      process.stdout.write(`Session handoffs written (.agentflow/handoffs/): ${report.handoffsWritten}\n`);
       process.stdout.write('Most re-read files:\n');
       if (report.mostReread.length === 0) {
         process.stdout.write('  (none)\n');

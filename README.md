@@ -10,7 +10,8 @@ ctx-gate has three capabilities in one tool:
 
 - **Context Optimizer** (`ctx-gate optimize`) scans a target repo and
   writes token-budgeted context files that GitHub Copilot loads
-  automatically: `AGENTS.md`, `.github/instructions/*.instructions.md`,
+  automatically: `AGENTS.md`, `CONTEXT.md` (this repo's shared vocabulary,
+  rendered from `glossary.yml`), `.github/instructions/*.instructions.md`,
   and `.github/skills/*/SKILL.md`. Run rarely (e.g. monthly), on demand.
 - **Requirement Gate** (`ctx-gate check` / `learn` / `enforce`) is a set
   of local, deterministic scripts — no LLM calls, ever — wired into
@@ -116,8 +117,8 @@ to index the repo yourself afterward — see
 ### `ctx-gate configure [id] [value]`
 
 Manual command for answering (or re-answering) one of `init`'s standing
-questions later, or adding a feature-word mapping, without re-running
-`init` or hand-editing YAML.
+questions later, without re-running `init` or hand-editing YAML. Shared
+vocabulary lives in glossary.yml instead — see `ctx-gate glossary` below.
 
 Run with no arguments to see what's configurable and its current value:
 
@@ -132,28 +133,42 @@ ctx-gate: configurable answers for this repo (.context-ops/memory/standing.yml)
   performance-target     not measured                     [default]
   logging-convention     (blank)                          [default]
 
-ctx-gate: feature-word mappings (.context-ops/memory/features.yml)
-
-  (none mapped)
-
 Usage: ctx-gate configure <id> <value>
-       ctx-gate configure feature <word> <path>
 ```
 
 Then set one:
 
 ```bash
 ctx-gate configure logging-convention "use pino, one JSON line per request"
-ctx-gate configure feature sorting src/utils/sort.js
 ```
 
 `ctx-gate configure <id> <value>` overwrites that standing.yml entry and
 marks it `confirmed` (works even for `error-handling` — a manual answer
-overrides the sniffer's guess). `ctx-gate configure feature <word> <path>`
-adds a folder mapping to features.yml, appending to an existing word rather
-than replacing it. Both are just YAML writes — `.context-ops/memory/standing.yml`
-and `features.yml` are plain, git-committed files, so hand-editing them
-works too; this command is just the friendlier path.
+overrides the sniffer's guess). This is just a YAML write —
+`.context-ops/memory/standing.yml` is a plain, git-committed file, so
+hand-editing it works too; this command is just the friendlier path.
+
+### `ctx-gate glossary add|list|review`
+
+Manages this repo's shared vocabulary in
+`.context-ops/memory/glossary.yml` — the single source of truth rendered
+into `CONTEXT.md` by `ctx-gate optimize` and read directly by `check` to
+resolve a vague request locally (`paths` never leaves this machine; only
+`definition` is ever rendered into an agent-facing file). `ctx-gate init`
+seeds `candidate` terms automatically from detected screens, endpoints,
+and top-level modules, and asks you to define up to 8 of them.
+
+```bash
+ctx-gate glossary add "reconciliation" "Matching ledger entries against the bank statement."
+ctx-gate glossary list
+ctx-gate glossary review
+```
+
+`add` always confirms the term (creating it if it doesn't exist yet).
+`list` shows every term and its status. `review` surfaces `candidate`
+terms still waiting on a definition, plus any term that's shown up in 3+
+requests but isn't defined anywhere — never auto-deletes or auto-confirms
+anything, same convention as `ctx-gate review`.
 
 ### `ctx-gate check` / `learn` / `enforce` (the Requirement Gate)
 
@@ -342,7 +357,7 @@ never centralized, never shared across repos.
 |---|---|---|
 | `manifest.json` | yes | Detected facts about the repo (stacks, screens, API endpoints) — regenerated fresh on every `ctx-gate init`. |
 | `memory/standing.yml` | yes | Answers to the standing questions (what "done" means, high-risk paths, error-handling/naming/logging conventions) — confirmed by a human, or auto-detected where possible. |
-| `memory/features.yml` | yes | Business words your team uses mapped to specific folders (e.g. "sorting" → `src/utils/sort.js`), so `check` can resolve vague requests. |
+| `memory/glossary.yml` | yes | This repo's shared vocabulary — term, definition, and optional folder paths. `definition` renders into `CONTEXT.md`; `paths` is read directly by `check` to resolve a vague request locally, never sent to a model. |
 | `memory/learned.yml` | yes | Patterns promoted by `ctx-gate learn` once the same clarification has come up 3 times — starts empty. |
 | `config.yml` | yes | Team enforcement level + which agent adapter is active + session-warning thresholds + `agentPack.model`/`agentPack.commitArtifacts`. |
 | `agent-pack.json` | yes | Hashes of the currently-installed Agent Pack files, written by `ctx-gate agents install`/`update` — lets `update` tell a local edit apart from a pack version change. |

@@ -7,9 +7,13 @@ const {
   isPipelineInvocation,
   isShortFollowUp,
   extractMentionedEntities,
-  matchFeatures,
+  matchGlossary,
   matchLearned,
   identifyUnknownSlots,
+  extractCandidateJargonTerms,
+  isTermKnown,
+  updateUnknownTerms,
+  UNKNOWN_TERM_SESSION_THRESHOLD,
   estimateSessionCost,
   evaluateSessionWarning,
   composeResponse,
@@ -40,7 +44,7 @@ const standing = {
   ],
 };
 
-const features = { version: 1, mappings: [{ word: 'sorting', paths: ['src/utils/sort.js'] }] };
+const glossary = { version: 1, terms: [{ term: 'sorting', aka: [], definition: 'How order rows are sorted.', paths: ['src/utils/sort.js'], status: 'confirmed', hits: 0 }] };
 
 const learned = {
   patterns: [
@@ -55,7 +59,7 @@ const learned = {
 };
 
 function deps(overrides = {}) {
-  return { manifest, standing, learned, features, searchCode: async () => [], sessionCache: {}, ...overrides };
+  return { manifest, standing, learned, glossary, searchCode: async () => [], sessionCache: {}, ...overrides };
 }
 
 // --- isShortFollowUp -------------------------------------------------
@@ -88,15 +92,66 @@ test('extractMentionedEntities returns [] when nothing matches', () => {
   assert.deepEqual(extractMentionedEntities('add validation', manifest), []);
 });
 
-// --- matchFeatures -------------------------------------------------
+// --- matchGlossary -------------------------------------------------
 
-test('matchFeatures matches a business word to its mapped path', () => {
-  const matches = matchFeatures('change sorting order', features);
-  assert.deepEqual(matches, [{ path: 'src/utils/sort.js', kind: 'feature-mapping', confidence: 'high' }]);
+test('matchGlossary matches a confirmed term to its mapped path', () => {
+  const matches = matchGlossary('change sorting order', glossary);
+  assert.deepEqual(matches, [{ path: 'src/utils/sort.js', kind: 'glossary-term', confidence: 'high' }]);
 });
 
-test('matchFeatures returns [] when no word matches', () => {
-  assert.deepEqual(matchFeatures('add validation', features), []);
+test('matchGlossary returns [] when no term matches', () => {
+  assert.deepEqual(matchGlossary('add validation', glossary), []);
+});
+
+test('matchGlossary never resolves a candidate (unconfirmed) term automatically', () => {
+  const candidateGlossary = { version: 1, terms: [{ term: 'sorting', paths: ['src/utils/sort.js'], status: 'candidate' }] };
+  assert.deepEqual(matchGlossary('change sorting order', candidateGlossary), []);
+});
+
+// --- extractCandidateJargonTerms / isTermKnown / updateUnknownTerms --------
+
+test('extractCandidateJargonTerms finds a Title Case phrase and a long unusual single word', () => {
+  const terms = extractCandidateJargonTerms('run the Order Reconciliation flow for reconciliation');
+  assert.ok(terms.includes('Order Reconciliation'));
+  assert.ok(terms.includes('reconciliation'));
+});
+
+test('extractCandidateJargonTerms returns [] for a plain short prompt', () => {
+  assert.deepEqual(extractCandidateJargonTerms('add validation'), []);
+});
+
+test('isTermKnown is true when the term is defined in the glossary', () => {
+  assert.equal(isTermKnown('sorting', glossary), true);
+});
+
+test('isTermKnown is true when the term matches a repo symbol name', () => {
+  const known = new Set(['reconciliation']);
+  assert.equal(isTermKnown('reconciliation', { terms: [] }, known), true);
+});
+
+test('isTermKnown is false when the term is in neither the glossary nor known symbol names', () => {
+  assert.equal(isTermKnown('reconciliation', { terms: [] }, new Set()), false);
+});
+
+test('updateUnknownTerms crosses the threshold only once a term appears in 3 distinct sessions', () => {
+  let state = {};
+  let result = updateUnknownTerms(state, ['reconciliation'], 's1', '2026-01-01T00:00:00.000Z');
+  assert.deepEqual(result.crossed, []);
+  state = result.state;
+  result = updateUnknownTerms(state, ['reconciliation'], 's2', '2026-01-02T00:00:00.000Z');
+  assert.deepEqual(result.crossed, []);
+  state = result.state;
+  result = updateUnknownTerms(state, ['reconciliation'], 's3', '2026-01-03T00:00:00.000Z');
+  assert.equal(result.crossed.length, 1);
+  assert.equal(result.crossed[0].term, 'reconciliation');
+  assert.equal(result.crossed[0].sessionCount, UNKNOWN_TERM_SESSION_THRESHOLD);
+});
+
+test('updateUnknownTerms does not double-count the same session', () => {
+  let state = {};
+  state = updateUnknownTerms(state, ['reconciliation'], 's1', 't1').state;
+  state = updateUnknownTerms(state, ['reconciliation'], 's1', 't2').state;
+  assert.equal(state.reconciliation.sessions.length, 1);
 });
 
 // --- matchLearned -------------------------------------------------
@@ -255,6 +310,19 @@ test('evaluateSessionWarning fires the firm warning once the hard threshold is c
 test('evaluateSessionWarning caps at two warnings per session, never a third', () => {
   const state = { turnCount: 1000, estimatedBytesRead: 0, warningsEmitted: 2 };
   assert.equal(evaluateSessionWarning(state, sessionConfig), null);
+});
+
+test('evaluateSessionWarning message suggests starting a fresh chat when the handoff skill is not installed', () => {
+  const state = { turnCount: 21, estimatedBytesRead: 0, warningsEmitted: 0 };
+  const result = evaluateSessionWarning(state, { ...sessionConfig, handoffInstalled: false });
+  assert.match(result.message, /Consider starting a fresh chat/);
+  assert.doesNotMatch(result.message, /handoff skill/);
+});
+
+test('evaluateSessionWarning message points at the handoff skill when it is installed', () => {
+  const state = { turnCount: 21, estimatedBytesRead: 0, warningsEmitted: 0 };
+  const result = evaluateSessionWarning(state, { ...sessionConfig, handoffInstalled: true });
+  assert.match(result.message, /Run the handoff skill/);
 });
 
 test('evaluateSessionWarning skips straight to the firm warning if the hard threshold is crossed on the first check', () => {

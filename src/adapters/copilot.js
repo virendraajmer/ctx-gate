@@ -48,6 +48,12 @@ function formatCheckOutput(checkResponse) {
   if (checkResponse.sessionWarning) {
     lines.push(checkResponse.sessionWarning.message);
   }
+  for (const t of checkResponse.unknownTermsCrossed || []) {
+    lines.push(
+      `"${t.term}" has appeared in ${t.sessionCount} requests but is not defined anywhere in the glossary or the codebase. ` +
+        `Run \`ctx-gate glossary add ${t.term}\` to define it.`
+    );
+  }
   if (checkResponse.warningLevel === 'warn') {
     lines.push('This request looks underspecified — proceeding anyway.');
   }

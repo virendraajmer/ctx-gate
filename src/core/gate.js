@@ -15,16 +15,36 @@ const SHORT_FOLLOWUP_WORD_LIMIT = 4;
 const SESSION_COST_TOKENS_PER_TURN = 50;
 const SESSION_COST_BYTES_PER_TOKEN_ESTIMATE = 4;
 
+// Two variants each: the handoff-skill nudge only makes sense once that
+// skill is actually installed in this repo (see
+// src/core/agentPack.js#isHandoffInstalled) — a warning pointing at
+// something that doesn't exist is worse than no warning (addon-6 Part 3).
 const SESSION_WARNING_MESSAGES = {
-  soft:
-    'ctx-gate: this chat session has grown long. Copilot resends the full conversation history on every ' +
-    "turn, so each new message here now pays for everything before it. Consider starting a fresh chat for " +
-    "your next task — ctx-gate can only advise; it can't open, close, or clear a chat for you.",
-  hard:
-    'ctx-gate: this chat session is now expensive — every message keeps resending a long history behind it. ' +
-    "Strongly consider wrapping up and starting a new chat for the next task. ctx-gate can only advise; it " +
-    "can't open, close, or clear a chat for you.",
+  soft: {
+    withHandoff:
+      'ctx-gate: this chat session has grown long. Copilot resends the full conversation history on every ' +
+      "turn, so each new message here now pays for everything before it. Run the handoff skill, then start " +
+      "a fresh chat for your next task — ctx-gate can only advise; it can't open, close, or clear a chat for you.",
+    withoutHandoff:
+      'ctx-gate: this chat session has grown long. Copilot resends the full conversation history on every ' +
+      "turn, so each new message here now pays for everything before it. Consider starting a fresh chat for " +
+      "your next task — ctx-gate can only advise; it can't open, close, or clear a chat for you.",
+  },
+  hard: {
+    withHandoff:
+      'ctx-gate: this chat session is now expensive — every message keeps resending a long history behind it. ' +
+      "Run the handoff skill, then wrap up and start a new chat for the next task. ctx-gate can only advise; " +
+      "it can't open, close, or clear a chat for you.",
+    withoutHandoff:
+      'ctx-gate: this chat session is now expensive — every message keeps resending a long history behind it. ' +
+      "Strongly consider wrapping up and starting a new chat for the next task. ctx-gate can only advise; it " +
+      "can't open, close, or clear a chat for you.",
+  },
 };
+
+function sessionWarningMessage(level, handoffInstalled) {
+  return SESSION_WARNING_MESSAGES[level][handoffInstalled ? 'withHandoff' : 'withoutHandoff'];
+}
 
 // Short-circuits acknowledgment-style follow-ups ("yes", "ok continue") —
 // deliberately NOT any prompt under the word limit, since real short
@@ -57,6 +77,28 @@ const ACCEPTANCE_SIGNAL_RE = /\b(test|tests|passes?|fails?|when|until|should|mus
 // with the workflow (see addon-4-agent-pack.md).
 const PIPELINE_INVOCATION_RE = /Act as the agent\s+"[^"]+"\s+defined in\s+"[^"]+"/i;
 const PIPELINE_ARTIFACT_PATH_RE = /\.agentflow\/[^/\s]+\//;
+
+// Undefined-jargon detection (see src/core/glossary.js for the fs-backed
+// half of this — repo symbol-name collection and the CLI commands). Zero
+// AI: candidate terms are found by shape (Title Case phrases, long unusual
+// single words), not meaning, so this is necessarily a heuristic and will
+// both miss real jargon and occasionally flag a real word. That's an
+// acceptable trade for "no LLM calls in the gate path" — see addon-6 Part 1.
+const JARGON_MIN_WORD_LENGTH = 8;
+const JARGON_STOPWORDS = new Set([
+  'because', 'through', 'without', 'properly', 'probably', 'currently',
+  'following', 'required', 'possible', 'necessary', 'important', 'function',
+  'variable', 'database', 'component', 'application', 'interface',
+  'different', 'available', 'something', 'somewhere', 'sometimes',
+  'everything', 'implementation', 'performance', 'configuration',
+  'documentation', 'information', 'validation', 'directory', 'structure',
+]);
+const JARGON_PHRASE_RE = /\b[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*){1,2}\b/g;
+
+// Emits at most one surfacing per term per unknown-terms.json lifetime —
+// the developer is nudged once, right when the term crosses this many
+// distinct sessions, not on every request after.
+const UNKNOWN_TERM_SESSION_THRESHOLD = 3;
 
 const ERROR_HANDLING_MENTION_RE = /\b(error|exception|throw|catch|fail(?:ure)?)\b/i;
 const NAMING_MENTION_RE = /\b(name|naming|rename)\b/i;
@@ -139,22 +181,108 @@ function extractMentionedEntities(prompt, manifest) {
 }
 
 /**
+ * Resolves a mentioned glossary term to its mapped path(s), the way
+ * matchFeatures used to for features.yml. Only `confirmed`/`inferred`
+ * terms resolve automatically — `candidate` entries are never used until a
+ * developer confirms them (see src/core/glossary.js).
+ *
  * @param {string} prompt
- * @param {Object} features
+ * @param {Object} glossary
  * @returns {import('../adapters/types').CheckMatch[]}
  */
-function matchFeatures(prompt, features) {
+function matchGlossary(prompt, glossary) {
   const lower = (prompt || '').toLowerCase();
   const matches = [];
-  const mappings = (features && features.mappings) || [];
-  for (const mapping of mappings) {
-    if (mapping.word && wordBoundaryIncludes(lower, mapping.word.toLowerCase())) {
-      for (const p of mapping.paths || []) {
-        matches.push({ path: p, kind: 'feature-mapping', confidence: 'high' });
-      }
+  const terms = (glossary && glossary.terms) || [];
+  for (const t of terms) {
+    if (t.status === 'candidate') continue;
+    const names = [t.term, ...(t.aka || [])].filter(Boolean);
+    const mentioned = names.some((n) => wordBoundaryIncludes(lower, n.toLowerCase()));
+    if (!mentioned) continue;
+    for (const p of t.paths || []) {
+      matches.push({ path: p, kind: 'glossary-term', confidence: 'high' });
     }
   }
   return matches;
+}
+
+/**
+ * Extracts candidate domain-vocabulary terms from a prompt, by shape only
+ * (no meaning, no AI): 2-3 word Title Case phrases, and long single words
+ * unlikely to be common English. Deliberately over-inclusive — filtering
+ * against the glossary and repo symbol names (isTermKnown) is what turns
+ * this into a real signal.
+ *
+ * @param {string} prompt
+ * @returns {string[]}
+ */
+function extractCandidateJargonTerms(prompt) {
+  const text = prompt || '';
+  const terms = new Set();
+
+  JARGON_PHRASE_RE.lastIndex = 0;
+  let m;
+  while ((m = JARGON_PHRASE_RE.exec(text))) {
+    terms.add(m[0]);
+  }
+
+  const words = text.match(/\b[a-zA-Z]+\b/g) || [];
+  for (const w of words) {
+    if (w.length < JARGON_MIN_WORD_LENGTH) continue;
+    if (JARGON_STOPWORDS.has(w.toLowerCase())) continue;
+    terms.add(w);
+  }
+
+  return [...terms];
+}
+
+/**
+ * @param {string} term
+ * @param {Object} glossary
+ * @param {Set<string>} [knownSymbolNames] - from src/core/glossary.js#collectRepoSymbolNames
+ * @returns {boolean} true if the term is already defined in the glossary,
+ *   or matches a real file/directory name in the repo
+ */
+function isTermKnown(term, glossary, knownSymbolNames) {
+  const lower = term.toLowerCase();
+  const glossaryTerms = (glossary && glossary.terms) || [];
+  const inGlossary = glossaryTerms.some((t) => {
+    const names = [t.term, ...(t.aka || [])].filter(Boolean).map((n) => n.toLowerCase());
+    return names.includes(lower);
+  });
+  if (inGlossary) return true;
+
+  if (!knownSymbolNames) return false;
+  const words = lower.split(/\s+/);
+  return words.some((w) => knownSymbolNames.has(w)) || knownSymbolNames.has(lower.replace(/\s+/g, ''));
+}
+
+/**
+ * Advances .context-ops/state/unknown-terms.json by one request's worth of
+ * candidate jargon. Pure: no file I/O here, same convention as
+ * src/core/learn.js#recordMcpUsage — bin/ctx-gate.js reads the existing
+ * state and writes back whatever this returns.
+ *
+ * @param {Object} state - current unknown-terms.json contents, keyed by lowercased term
+ * @param {string[]} terms - candidate terms from this request, already filtered to unknown ones
+ * @param {string} sessionId
+ * @param {string} timestamp - ISO 8601
+ * @returns {{ state: Object, crossed: Array<{term: string, sessionCount: number}> }}
+ *   crossed - terms that reached UNKNOWN_TERM_SESSION_THRESHOLD distinct sessions on this call
+ */
+function updateUnknownTerms(state, terms, sessionId, timestamp) {
+  const next = { ...state };
+  const crossed = [];
+  for (const term of terms) {
+    const key = term.toLowerCase();
+    const existing = next[key] || { term, sessions: [], firstSeen: timestamp, lastSeen: timestamp };
+    const sessions = existing.sessions.includes(sessionId) ? existing.sessions : [...existing.sessions, sessionId];
+    next[key] = { term, sessions, firstSeen: existing.firstSeen, lastSeen: timestamp };
+    if (sessions.length === UNKNOWN_TERM_SESSION_THRESHOLD) {
+      crossed.push({ term, sessionCount: sessions.length });
+    }
+  }
+  return { state: next, crossed };
 }
 
 /**
@@ -278,10 +406,10 @@ function evaluateSessionWarning(state, config) {
   const cost = estimateSessionCost(state);
 
   if (cost >= config.sessionWarnHardAt) {
-    return { level: 'hard', message: SESSION_WARNING_MESSAGES.hard, warningsEmittedAfter: 2 };
+    return { level: 'hard', message: sessionWarningMessage('hard', config.handoffInstalled), warningsEmittedAfter: 2 };
   }
   if (emitted < 1 && cost >= config.sessionWarnAt) {
-    return { level: 'soft', message: SESSION_WARNING_MESSAGES.soft, warningsEmittedAfter: 1 };
+    return { level: 'soft', message: sessionWarningMessage('soft', config.handoffInstalled), warningsEmittedAfter: 1 };
   }
   return null;
 }
@@ -303,6 +431,7 @@ function composeResponse(parts) {
       questions: [],
       warningLevel: 'off',
       sessionWarning: parts.sessionWarning || null,
+      unknownTermsCrossed: [],
     };
   }
 
@@ -332,17 +461,19 @@ function composeResponse(parts) {
     questions,
     warningLevel: warningLevel || 'off',
     sessionWarning: parts.sessionWarning || null,
+    unknownTermsCrossed: parts.unknownTermsCrossed || [],
   };
 }
 
 /**
  * @param {import('../adapters/types').CheckRequest} request
- * @param {Object} deps - { manifest, standing, learned, features, searchCode, sessionCache }
- * @returns {Promise<import('../adapters/types').CheckResponse>}
+ * @param {Object} deps - { manifest, standing, learned, glossary, searchCode, sessionCache,
+ *   knownSymbolNames, unknownTermsState, now }
+ * @returns {Promise<import('../adapters/types').CheckResponse & { unknownTermsStateAfter: Object }>}
  */
 async function runCheck(request, deps) {
   const { prompt, sessionId } = request;
-  const { manifest, standing, learned, features, searchCode, sessionCache, sessionState, config } = deps;
+  const { manifest, standing, learned, glossary, searchCode, sessionCache, sessionState, config, knownSymbolNames, unknownTermsState } = deps;
 
   const sessionWarning = evaluateSessionWarning(sessionState, config);
 
@@ -350,18 +481,18 @@ async function runCheck(request, deps) {
   // invocation is a long, fully-specified prompt, not a short "yes/ok"
   // follow-up, so it would never hit isShortFollowUp on its own.
   if (isPipelineInvocation(prompt)) {
-    return composeResponse({ skipped: true, skipReason: 'pipeline', sessionWarning });
+    return { ...composeResponse({ skipped: true, skipReason: 'pipeline', sessionWarning }), unknownTermsStateAfter: unknownTermsState || {} };
   }
 
   if (isShortFollowUp(prompt, sessionCache, sessionId)) {
-    return composeResponse({ skipped: true, skipReason: 'short-followup', sessionWarning });
+    return { ...composeResponse({ skipped: true, skipReason: 'short-followup', sessionWarning }), unknownTermsStateAfter: unknownTermsState || {} };
   }
 
   const entityMatches = extractMentionedEntities(prompt, manifest);
-  const featureMatches = matchFeatures(prompt, features);
+  const glossaryMatches = matchGlossary(prompt, glossary);
   const seen = new Set();
   const matches = [];
-  for (const m of [...entityMatches, ...featureMatches]) {
+  for (const m of [...entityMatches, ...glossaryMatches]) {
     const key = `${m.path}#${m.symbol || ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -384,18 +515,33 @@ async function runCheck(request, deps) {
 
   const warningLevel = unknown.scope || unknown.acceptance || unknown.vagueTerms.length > 0 ? 'warn' : 'off';
 
-  return composeResponse({ skipped: false, matches, standingNotes, learnedSuggestions, unknown, warningLevel, sessionWarning });
+  const jargonTerms = extractCandidateJargonTerms(prompt).filter((t) => !isTermKnown(t, glossary, knownSymbolNames));
+  const { state: unknownTermsStateAfter, crossed: unknownTermsCrossed } = updateUnknownTerms(
+    unknownTermsState || {},
+    jargonTerms,
+    sessionId,
+    deps.now || new Date().toISOString()
+  );
+
+  return {
+    ...composeResponse({ skipped: false, matches, standingNotes, learnedSuggestions, unknown, warningLevel, sessionWarning, unknownTermsCrossed }),
+    unknownTermsStateAfter,
+  };
 }
 
 module.exports = {
   SHORT_FOLLOWUP_WORD_LIMIT,
   VAGUE_TERMS,
+  UNKNOWN_TERM_SESSION_THRESHOLD,
   isPipelineInvocation,
   isShortFollowUp,
   extractMentionedEntities,
-  matchFeatures,
+  matchGlossary,
   matchLearned,
   identifyUnknownSlots,
+  extractCandidateJargonTerms,
+  isTermKnown,
+  updateUnknownTerms,
   estimateSessionCost,
   evaluateSessionWarning,
   composeResponse,

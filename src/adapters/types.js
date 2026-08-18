@@ -54,6 +54,8 @@
  * @property {string[]} vagueTermsFound
  * @property {GateQuestion[]} questions
  * @property {'off'|'warn'} warningLevel - informational only; 'block' is decided by EnforceDecision
+ * @property {Array<{term: string, sessionCount: number}>} unknownTermsCrossed - candidate
+ *   jargon terms that just crossed src/core/gate.js#UNKNOWN_TERM_SESSION_THRESHOLD distinct sessions
  */
 
 /**

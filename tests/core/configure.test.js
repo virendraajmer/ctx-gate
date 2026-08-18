@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const store = require('../../src/memory/store');
-const { listConfigurable, setStandingAnswer, setFeatureMapping } = require('../../src/core/configure');
+const { listConfigurable, setStandingAnswer } = require('../../src/core/configure');
 
 function tmpRepo() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-gate-configure-'));
@@ -16,11 +16,10 @@ function tmpRepo() {
 test('listConfigurable falls back to each question def default when standing.yml does not exist yet', () => {
   const dir = tmpRepo();
   try {
-    const { standing, features } = listConfigurable(dir);
+    const { standing } = listConfigurable(dir);
     const acceptance = standing.find((r) => r.id === 'done-means');
     assert.equal(acceptance.value, 'tests pass + CI green');
     assert.equal(acceptance.status, 'default');
-    assert.deepEqual(features, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -81,26 +80,6 @@ test('setStandingAnswer rejects an unknown id', () => {
   const dir = tmpRepo();
   try {
     assert.throws(() => setStandingAnswer(dir, 'not-a-real-id', 'x'), /Unknown id "not-a-real-id"/);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('setFeatureMapping creates features.yml from scratch and adds a path to an existing word', () => {
-  const dir = tmpRepo();
-  try {
-    setFeatureMapping(dir, 'sorting', 'src/utils/sort.js');
-    let onDisk = store.readFeatures(dir);
-    assert.deepEqual(onDisk.mappings, [{ word: 'sorting', paths: ['src/utils/sort.js'] }]);
-
-    setFeatureMapping(dir, 'sorting', 'src/utils/sortHelpers.js');
-    onDisk = store.readFeatures(dir);
-    assert.deepEqual(onDisk.mappings, [{ word: 'sorting', paths: ['src/utils/sort.js', 'src/utils/sortHelpers.js'] }]);
-
-    // adding the same path twice is a no-op, not a duplicate
-    setFeatureMapping(dir, 'sorting', 'src/utils/sort.js');
-    onDisk = store.readFeatures(dir);
-    assert.equal(onDisk.mappings[0].paths.length, 2);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -18,6 +18,10 @@ const { resolveTestCommand } = require('./efficiencyBlock');
 const PACK_DIR = path.join(__dirname, '..', '..', 'agent-pack');
 const AGENT_FILES = ['planner.agent.md', 'implementer.agent.md', 'reviewer.agent.md', 'pipeline.agent.md'];
 const GUIDELINES_FILE = 'agents.instructions.md';
+// Copilot skill format (.github/skills/<name>/SKILL.md), not an *.agent.md
+// file, so it installs alongside AGENT_FILES but is never scanned by
+// validate() below. See agent-pack/handoff/SKILL.md and addon-6 Part 3.
+const HANDOFF_SKILL_FILE = 'handoff/SKILL.md';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'venv', '.venv', '__pycache__', 'bin', 'obj', 'dist', 'build']);
 
@@ -107,6 +111,10 @@ function targetInstructionsDir(repoRoot) {
   return path.join(repoRoot, '.github', 'instructions');
 }
 
+function targetSkillsDir(repoRoot) {
+  return path.join(repoRoot, '.github', 'skills');
+}
+
 function agentPackStatePath(repoRoot) {
   return path.join(repoRoot, '.context-ops', 'agent-pack.json');
 }
@@ -171,6 +179,31 @@ function install(repoRoot, opts = {}) {
       status: 'conflict',
       diffText: diffText(filename, existing, rendered),
     });
+  }
+
+  {
+    const content = readPackFile(HANDOFF_SKILL_FILE);
+    const targetPath = path.join(targetSkillsDir(repoRoot), HANDOFF_SKILL_FILE);
+    const hash = sha256(content);
+
+    if (!fs.existsSync(targetPath)) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, content, 'utf8');
+      installedState.files[HANDOFF_SKILL_FILE] = hash;
+      results.push({ file: `.github/skills/${HANDOFF_SKILL_FILE}`, status: 'written' });
+    } else {
+      const existing = fs.readFileSync(targetPath, 'utf8');
+      if (existing === content) {
+        installedState.files[HANDOFF_SKILL_FILE] = hash;
+        results.push({ file: `.github/skills/${HANDOFF_SKILL_FILE}`, status: 'unchanged' });
+      } else {
+        results.push({
+          file: `.github/skills/${HANDOFF_SKILL_FILE}`,
+          status: 'conflict',
+          diffText: diffText(HANDOFF_SKILL_FILE, existing, content),
+        });
+      }
+    }
   }
 
   if (opts.withGuidelines) {
@@ -275,6 +308,32 @@ function update(repoRoot) {
 
     // locally-modified / manual-merge-needed: report, never write.
     results.push({ file: `.github/agents/${filename}`, status, diffText: diffText(filename, existing, rendered) });
+  }
+
+  {
+    const targetPath = path.join(targetSkillsDir(repoRoot), HANDOFF_SKILL_FILE);
+    const content = readPackFile(HANDOFF_SKILL_FILE);
+    const newHash = sha256(content);
+    const recordedHash = installedState.files[HANDOFF_SKILL_FILE];
+    const label = `.github/skills/${HANDOFF_SKILL_FILE}`;
+
+    if (!fs.existsSync(targetPath)) {
+      results.push({ file: label, status: classifyDrift({ recordedHash, currentHash: undefined, newHash }) });
+    } else {
+      const existing = fs.readFileSync(targetPath, 'utf8');
+      const currentHash = sha256(existing);
+      const status = classifyDrift({ recordedHash, currentHash, newHash });
+
+      if (status === 'unchanged') {
+        results.push({ file: label, status });
+      } else if (status === 'safe-to-apply') {
+        fs.writeFileSync(targetPath, content, 'utf8');
+        installedState.files[HANDOFF_SKILL_FILE] = newHash;
+        results.push({ file: label, status, diffText: diffText(HANDOFF_SKILL_FILE, existing, content) });
+      } else {
+        results.push({ file: label, status, diffText: diffText(HANDOFF_SKILL_FILE, existing, content) });
+      }
+    }
   }
 
   installedState.version = packManifest.version;
@@ -391,10 +450,19 @@ function validate(repoRoot) {
   return { files, errorCount, warningCount };
 }
 
+/**
+ * @param {string} repoRoot
+ * @returns {boolean} true if the handoff skill has been installed into this repo
+ */
+function isHandoffInstalled(repoRoot) {
+  return fs.existsSync(path.join(targetSkillsDir(repoRoot), HANDOFF_SKILL_FILE));
+}
+
 module.exports = {
   PACK_DIR,
   AGENT_FILES,
   GUIDELINES_FILE,
+  HANDOFF_SKILL_FILE,
   loadPackManifest,
   renderAgentFile,
   resolveModel,
@@ -405,4 +473,5 @@ module.exports = {
   validate,
   validateAgentFile,
   parseFrontmatter,
+  isHandoffInstalled,
 };

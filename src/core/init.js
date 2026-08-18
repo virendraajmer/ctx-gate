@@ -10,8 +10,9 @@ const { detectNode } = require('../detectors/node');
 const { detectReact } = require('../detectors/react');
 const { detectPython } = require('../detectors/python');
 const { detectDotnet } = require('../detectors/dotnet');
-const { emptyManifest, emptyStanding, emptyFeatures, emptyLearned, defaultTeamConfig } = require('../memory/schema');
-const { buildStandingEntries, buildFeatureMappings } = require('./standingQuestions');
+const { emptyManifest, emptyStanding, emptyGlossary, emptyLearned, defaultTeamConfig } = require('../memory/schema');
+const { buildStandingEntries } = require('./standingQuestions');
+const { seedCandidateTerms, buildGlossaryTermsFromCandidates } = require('./glossary');
 const store = require('../memory/store');
 const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
 const { writeHooksFile } = require('./hooks');
@@ -30,7 +31,7 @@ const DEFAULT_CTX_GATE_JS_PATH = require.resolve(path.join('..', '..', 'bin', 'c
  *   package's own bin/ctx-gate.js (correct for both a global npm install and a
  *   version-pinned copy made by install.ps1/install.sh, since each runs its own
  *   physical bin/ctx-gate.js).
- * @returns {Promise<{ manifest: Object, standing: Object, features: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null, mcpIndexResult: {success: boolean, message: string}|null, hooksPath: string, mcpServerSuggestions: string[] }>}
+ * @returns {Promise<{ manifest: Object, standing: Object, glossary: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null, mcpIndexResult: {success: boolean, message: string}|null, hooksPath: string, mcpServerSuggestions: string[] }>}
  */
 async function init(repoRoot, opts = {}) {
   const manifest = emptyManifest();
@@ -69,11 +70,12 @@ async function init(repoRoot, opts = {}) {
     store.writeStanding(repoRoot, standing);
   }
 
-  let features = store.readFeatures(repoRoot);
-  if (!features) {
-    features = emptyFeatures();
-    features.mappings = await buildFeatureMappings(repoRoot, opts.streams);
-    store.writeFeatures(repoRoot, features);
+  let glossary = store.readGlossary(repoRoot);
+  if (!glossary) {
+    const candidates = seedCandidateTerms(repoRoot, manifest);
+    glossary = emptyGlossary();
+    glossary.terms = await buildGlossaryTermsFromCandidates(candidates, opts.streams);
+    store.writeGlossary(repoRoot, glossary);
   }
 
   // Committed from the start (per the target-repo commit tree) even
@@ -122,7 +124,7 @@ async function init(repoRoot, opts = {}) {
   return {
     manifest,
     standing,
-    features,
+    glossary,
     learned,
     mcpAvailable,
     mcpGuidance,

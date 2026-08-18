@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { Readable, Writable } = require('node:stream');
 
-const { buildStandingEntries, buildFeatureMappings } = require('../../src/core/standingQuestions');
+const { buildStandingEntries } = require('../../src/core/standingQuestions');
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
 
@@ -80,25 +80,4 @@ test('buildStandingEntries asks all 6 questions when nothing is detected', async
 
   assert.equal(entries.length, 6);
   assert.ok(entries.every((e) => e.status !== 'detected'));
-});
-
-test('buildFeatureMappings parses word=path pairs', async () => {
-  const repoRoot = path.join(FIXTURES, 'empty-repo');
-  const { input, output } = scriptedStreams(['orders=src/features/orders, sorting=src/utils/sort.js']);
-
-  const mappings = await buildFeatureMappings(repoRoot, { input, output });
-
-  assert.deepEqual(mappings, [
-    { word: 'orders', paths: ['src/features/orders'] },
-    { word: 'sorting', paths: ['src/utils/sort.js'] },
-  ]);
-});
-
-test('buildFeatureMappings returns [] on blank input', async () => {
-  const repoRoot = path.join(FIXTURES, 'empty-repo');
-  const { input, output } = scriptedStreams(['']);
-
-  const mappings = await buildFeatureMappings(repoRoot, { input, output });
-
-  assert.deepEqual(mappings, []);
 });

@@ -12,12 +12,15 @@ const { fakeMcpClient } = require('../helpers/fakeMcpClient');
 const {
   BudgetExceededError,
   scanForOptimizer,
+  selectContextTerms,
   renderAgentsMd,
+  renderContextMd,
   renderInstructionsFiles,
   renderSkillFiles,
   diffAgainstExisting,
   optimize,
 } = require('../../src/core/optimize');
+const store = require('../../src/memory/store');
 const { checkBudget, countTokens, AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET } = require('../../src/tokenBudget');
 const { buildEfficiencyBlock } = require('../../src/core/efficiencyBlock');
 
@@ -122,6 +125,14 @@ test('renderSkillFiles produces one SKILL.md body per group with name/descriptio
   assert.match(files[0].body, /name: adding-a-screen/);
   assert.match(files[0].body, /description: Add a new screen to this app/);
   assertNoLineNumberCitations(files[0].body);
+});
+
+test('renderSkillFiles appends a sharp "Done when" completion criterion only when a confirmed acceptance answer exists', () => {
+  const withAcceptance = renderSkillFiles({ ...sampleFacts, acceptanceCriterion: 'tests pass + CI green' });
+  assert.match(withAcceptance[0].body, /Done when: tests pass \+ CI green/);
+
+  const without = renderSkillFiles(sampleFacts);
+  assert.doesNotMatch(without[0].body, /Done when:/);
 });
 
 test('diffAgainstExisting reports changed:true with diff text when the file does not exist yet', () => {
@@ -295,6 +306,80 @@ test('the efficiency block extends the baseline ignore list with Python-specific
     const result = await optimize(dir, { write: false });
     assert.match(result.agentsMd, /Never read: node_modules\/, dist\/, build\/, \*\.lock, \*\.min\.js, generated\/, migrations\/, test fixtures, sample data, __pycache__\/, \.venv\/, \*\.egg-info\/\./);
     assert.match(result.agentsMd, /`pytest > \/tmp\/out\.log/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- CONTEXT.md / glossary rendering ---------------------------------------
+
+test('selectContextTerms keeps only confirmed/inferred terms, sorted by hits descending', () => {
+  const glossary = {
+    terms: [
+      { term: 'low', status: 'confirmed', hits: 1 },
+      { term: 'high', status: 'inferred', hits: 9 },
+      { term: 'unconfirmed', status: 'candidate', hits: 100 },
+      { term: 'mid', status: 'confirmed', hits: 5 },
+    ],
+  };
+  const terms = selectContextTerms(glossary);
+  assert.deepEqual(terms.map((t) => t.term), ['high', 'mid', 'low']);
+});
+
+test('selectContextTerms returns [] for a null glossary', () => {
+  assert.deepEqual(selectContextTerms(null), []);
+});
+
+test('renderContextMd includes each term\'s definition, aka, and paths', () => {
+  const terms = [
+    { term: 'Orders screen', aka: ['order list'], definition: 'The customer-facing list of placed orders.', paths: ['src/screens/OrderList/**'] },
+  ];
+  const md = renderContextMd(terms);
+  assert.match(md, /## Orders screen/);
+  assert.match(md, /aka: order list/);
+  assert.match(md, /The customer-facing list of placed orders\./);
+  assert.match(md, /Paths: src\/screens\/OrderList\/\*\*/);
+});
+
+test('renderContextMd notes how many terms were omitted rather than silently truncating', () => {
+  const terms = [{ term: 'a', definition: 'x', paths: [] }, { term: 'b', definition: 'y', paths: [] }];
+  const md = renderContextMd(terms, { maxTerms: 1 });
+  assert.match(md, /## a/);
+  assert.doesNotMatch(md, /## b/);
+  assert.match(md, /1 more term omitted to stay under budget/);
+});
+
+test('renderAgentsMd points to CONTEXT.md instead of duplicating it, only when it has content', () => {
+  const withContext = renderAgentsMd({ ...sampleFacts, hasContextMd: true });
+  assert.match(withContext, /`CONTEXT\.md`/);
+
+  const withoutContext = renderAgentsMd({ ...sampleFacts, hasContextMd: false });
+  assert.doesNotMatch(withoutContext, /CONTEXT\.md/);
+});
+
+test('optimize renders and writes CONTEXT.md from confirmed glossary terms, and a second run is byte-identical', async () => {
+  const dir = copyFixture('node-react-basic');
+  try {
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
+    store.writeGlossary(dir, {
+      version: 1,
+      terms: [
+        { term: 'sorting', aka: [], definition: 'How order rows are sorted.', paths: ['src/utils/sort.js'], status: 'confirmed', hits: 3 },
+        { term: 'unconfirmed-term', aka: [], definition: '', paths: [], status: 'candidate', hits: 100 },
+      ],
+    });
+
+    await optimize(dir, { write: true });
+    const written = fs.readFileSync(path.join(dir, 'CONTEXT.md'), 'utf8');
+    assert.match(written, /## sorting/);
+    assert.match(written, /How order rows are sorted\./);
+    assert.doesNotMatch(written, /unconfirmed-term/);
+    assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /CONTEXT\.md/);
+
+    const first = await optimize(dir, { write: false });
+    const second = await optimize(dir, { write: false });
+    assert.equal(first.contextMd, second.contextMd);
+    assert.ok(second.diffs.every((d) => d.changed === false));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

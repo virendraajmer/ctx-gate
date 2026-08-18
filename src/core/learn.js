@@ -14,6 +14,11 @@ const KEYWORD_MIN_LENGTH = 4;
 const KEYWORD_MAX_COUNT = 5;
 const SESSION_STATE_TTL_DAYS = 7;
 
+// Matches a session-handoff document written by agent-pack/handoff/SKILL.md
+// (see addon-6 Part 3) — a forward-slash relative path regardless of OS,
+// since filesTouched paths come from the adapter layer already normalized.
+const HANDOFF_FILE_RE = /^\.agentflow\/handoffs\/[^/]+\.md$/;
+
 function deriveKeywords(prompt) {
   const words = (prompt || '')
     .toLowerCase()
@@ -31,6 +36,22 @@ function deriveSuggestion(filesTouched, manifest) {
   const screens = (manifest && manifest.stacks && manifest.stacks.react && manifest.stacks.react.screens) || [];
   const screen = screens.find((s) => s.path === touched);
   return screen ? { screen: screen.name } : { file: touched };
+}
+
+/**
+ * @param {Object|null} suggestion - { screen } or { file }, as returned by deriveSuggestion
+ * @param {Object} manifest
+ * @returns {string|null} the concrete file path a glossary term for this suggestion should map to
+ */
+function suggestionPath(suggestion, manifest) {
+  if (!suggestion) return null;
+  if (suggestion.file) return suggestion.file;
+  if (suggestion.screen) {
+    const screens = (manifest && manifest.stacks && manifest.stacks.react && manifest.stacks.react.screens) || [];
+    const screen = screens.find((s) => s.name === suggestion.screen);
+    return screen ? screen.path : null;
+  }
+  return null;
 }
 
 function triggerSignatureEquals(a, b) {
@@ -59,9 +80,13 @@ function slugify(text) {
  * @param {Object} [deps.sessionCache] - session-cache.json contents keyed by sessionId (src/core/gate.js)
  * @param {Object} [deps.manifest]
  * @param {number} [deps.promotionThreshold]
- * @returns {{ answerEntry: Object, learnedPatch: Object|null }}
+ * @returns {{ answerEntry: Object, learnedPatch: Object|null, glossaryPatch: Object|null }}
  *   answerEntry - line to append to answers.jsonl
  *   learnedPatch - pattern to upsert into learned.yml once the promotion threshold is hit, else null
+ *   glossaryPatch - a `candidate` glossary.yml term entry derived from the same promotion (the
+ *     addon-6 term-to-path promotion path — see src/core/glossary.js), else null. bin/ctx-gate.js
+ *     only writes it when no entry for that term exists yet, so a developer's own definition is
+ *     never overwritten by this automatic promotion.
  */
 function recordAndPromote(request, deps = {}) {
   const { answersLog = [], sessionCache = {}, manifest = {}, promotionThreshold = PROMOTION_THRESHOLD } = deps;
@@ -88,6 +113,7 @@ function recordAndPromote(request, deps = {}) {
   };
 
   let learnedPatch = null;
+  let glossaryPatch = null;
   if (trigger) {
     const occurrences = [...answersLog, answerEntry].filter(
       (e) => triggerSignatureEquals(e.trigger, trigger) && suggestionEquals(e.suggestion, suggestion)
@@ -103,10 +129,21 @@ function recordAndPromote(request, deps = {}) {
         occurrences,
         last_seen: request.timestamp,
       };
+
+      const path = suggestionPath(suggestion, manifest);
+      glossaryPatch = {
+        term: trigger.keywords.join(' '),
+        aka: [],
+        definition: '',
+        paths: path ? [path] : [],
+        status: 'candidate',
+        hits: occurrences,
+        last_used: request.timestamp,
+      };
     }
   }
 
-  return { answerEntry, learnedPatch };
+  return { answerEntry, learnedPatch, glossaryPatch };
 }
 
 /**
@@ -133,8 +170,15 @@ function updateSessionState(existingState, event) {
   state.lastSeenAt = event.timestamp;
 
   for (const file of event.filesTouched || []) {
-    if (!state.filesRead.includes(file)) {
+    const isNewFile = !state.filesRead.includes(file);
+    if (isNewFile) {
       state.filesRead.push(file);
+      // Counted once per distinct handoff file, not per touch — matches
+      // src/core/agentPack.js#HANDOFF_SKILL_FILE's contract of one
+      // .agentflow/handoffs/<timestamp>.md file per handoff written.
+      if (HANDOFF_FILE_RE.test(file)) {
+        state.handoffsWritten = (state.handoffsWritten || 0) + 1;
+      }
     }
     state.fileReadCounts[file] = (state.fileReadCounts[file] || 0) + 1;
   }

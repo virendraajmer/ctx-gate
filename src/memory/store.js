@@ -2,7 +2,7 @@
 
 // All local file I/O for .context-ops/. Every read/write helper here is
 // the single place that touches disk for manifest/standing/learned/
-// features/config — core modules receive already-loaded objects as
+// glossary/config — core modules receive already-loaded objects as
 // `deps` and never call fs directly themselves.
 
 const fs = require('fs');
@@ -110,21 +110,21 @@ function writeLearned(repoRoot, learned) {
 
 /**
  * @param {string} repoRoot
- * @returns {Object|null} the parsed features.yml, or null if it doesn't exist yet
+ * @returns {Object|null} the parsed glossary.yml, or null if it doesn't exist yet
  */
-function readFeatures(repoRoot) {
-  const p = path.join(memoryDir(repoRoot), 'features.yml');
+function readGlossary(repoRoot) {
+  const p = path.join(memoryDir(repoRoot), 'glossary.yml');
   if (!fs.existsSync(p)) {
     return null;
   }
   return yaml.load(fs.readFileSync(p, 'utf8'));
 }
 
-/** @param {string} repoRoot @param {Object} features */
-function writeFeatures(repoRoot, features) {
+/** @param {string} repoRoot @param {Object} glossary */
+function writeGlossary(repoRoot, glossary) {
   const dir = memoryDir(repoRoot);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'features.yml'), yaml.dump(features), 'utf8');
+  fs.writeFileSync(path.join(dir, 'glossary.yml'), yaml.dump(glossary), 'utf8');
 }
 
 /**
@@ -329,6 +329,38 @@ function writeMcpUsage(repoRoot, usage) {
   fs.writeFileSync(mcpUsagePath(repoRoot), JSON.stringify(usage, null, 2), 'utf8');
 }
 
+function unknownTermsPath(repoRoot) {
+  return path.join(stateDir(repoRoot), 'unknown-terms.json');
+}
+
+/**
+ * Undefined-jargon counters for `ctx-gate glossary` (see
+ * src/core/gate.js#updateUnknownTerms), keyed by lowercased term. Lives
+ * alongside session state under .context-ops/state/ — already gitignored
+ * by init.js, no new entry needed.
+ *
+ * @param {string} repoRoot
+ * @returns {Object} {} if the file doesn't exist yet or is corrupt
+ */
+function readUnknownTerms(repoRoot) {
+  const p = unknownTermsPath(repoRoot);
+  if (!fs.existsSync(p)) {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** @param {string} repoRoot @param {Object} state */
+function writeUnknownTerms(repoRoot, state) {
+  const dir = stateDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(unknownTermsPath(repoRoot), JSON.stringify(state, null, 2), 'utf8');
+}
+
 /** @param {string} repoRoot @param {string} sessionId */
 function deleteSessionStateFile(repoRoot, sessionId) {
   try {
@@ -345,8 +377,8 @@ module.exports = {
   writeStanding,
   readLearned,
   writeLearned,
-  readFeatures,
-  writeFeatures,
+  readGlossary,
+  writeGlossary,
   readConfig,
   writeTeamConfig,
   writeLocalConfig,
@@ -361,4 +393,6 @@ module.exports = {
   deleteSessionStateFile,
   readMcpUsage,
   writeMcpUsage,
+  readUnknownTerms,
+  writeUnknownTerms,
 };

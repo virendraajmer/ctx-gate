@@ -49,7 +49,7 @@ function silentStreams(blankLines = 10) {
 test('init detects node+react and writes manifest.json', async () => {
   const dir = copyFixture('node-react-basic');
   try {
-    const { manifest, standing, learned, mcpAvailable, mcpGuidance } = await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
+    const { manifest, standing, glossary, learned, mcpAvailable, mcpGuidance } = await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
     assert.equal(manifest.stacks.node.detected, true);
     assert.equal(manifest.stacks.node.packageManager, 'pnpm');
     assert.equal(manifest.stacks.react.detected, true);
@@ -64,10 +64,34 @@ test('init detects node+react and writes manifest.json', async () => {
       assert.match(mcpGuidance, /codebase-memory-mcp not found on PATH/);
     }
 
+    assert.equal(glossary.version, 1);
+    assert.ok(glossary.terms.length > 0);
+    // Every seeded candidate stays 'candidate' when the developer answers
+    // blank (silentStreams) — nothing is ever auto-confirmed on their behalf.
+    assert.ok(glossary.terms.every((t) => t.status === 'candidate'));
+    assert.equal(fs.existsSync(path.join(dir, '.context-ops', 'memory', 'glossary.yml')), true);
+
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(dir, '.context-ops', 'manifest.json'), 'utf8')
     );
     assert.equal(onDisk.stacks.node.packageManager, 'pnpm');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('init re-run does not re-seed glossary.yml once it already exists', async () => {
+  const dir = copyFixture('node-react-basic');
+  try {
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
+    const store = require('../../src/memory/store');
+    const glossary = store.readGlossary(dir);
+    glossary.terms.push({ term: 'custom', aka: [], definition: 'developer-added', paths: [], status: 'confirmed', hits: 0 });
+    store.writeGlossary(dir, glossary);
+
+    await init(dir, { streams: silentStreams(), mcp: { client: fakeMcpClient() } });
+    const onDisk = store.readGlossary(dir);
+    assert.ok(onDisk.terms.some((t) => t.term === 'custom'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

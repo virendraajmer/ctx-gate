@@ -77,6 +77,19 @@ test('recordAndPromote promotes to learned.yml at exactly 3 occurrences', () => 
   assert.equal(third.learnedPatch.occurrences, 3);
   assert.deepEqual(third.learnedPatch.suggestion, { screen: 'Orders' });
   assert.equal(third.learnedPatch.confidence, 'learned');
+
+  assert.ok(third.glossaryPatch);
+  assert.equal(third.glossaryPatch.term, 'change order sorting');
+  assert.equal(third.glossaryPatch.status, 'candidate');
+  assert.deepEqual(third.glossaryPatch.paths, ['src/pages/OrdersPage.tsx']);
+  assert.equal(third.glossaryPatch.definition, '');
+});
+
+test('recordAndPromote produces no glossaryPatch below the occurrence threshold', () => {
+  const request = { sessionId: 's1', toolName: 'editFiles', filesTouched: ['src/pages/OrdersPage.tsx'], timestamp: '2026-01-01T00:00:00.000Z' };
+  const sessionCache = sessionCacheFor('change sorting order');
+  const { glossaryPatch } = recordAndPromote(request, { answersLog: [], sessionCache, manifest });
+  assert.equal(glossaryPatch, null);
 });
 
 // --- updateSessionState -------------------------------------------------
@@ -136,6 +149,42 @@ test('updateSessionState does not mutate the existing state object it was given'
   });
 
   assert.deepEqual(original, snapshot);
+});
+
+test('updateSessionState counts a written session-handoff file', () => {
+  const state = updateSessionState(null, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    filesTouched: ['.agentflow/handoffs/2026-01-01T00-00-00.md'],
+    bytesRead: 200,
+  });
+  assert.equal(state.handoffsWritten, 1);
+});
+
+test('updateSessionState does not double-count the same handoff file across turns', () => {
+  const first = updateSessionState(null, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    filesTouched: ['.agentflow/handoffs/2026-01-01T00-00-00.md'],
+    bytesRead: 200,
+  });
+  const second = updateSessionState(first, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:05:00.000Z',
+    filesTouched: ['.agentflow/handoffs/2026-01-01T00-00-00.md'],
+    bytesRead: 200,
+  });
+  assert.equal(second.handoffsWritten, 1);
+});
+
+test('updateSessionState does not count an unrelated .agentflow file as a handoff', () => {
+  const state = updateSessionState(null, {
+    sessionId: 's1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    filesTouched: ['.agentflow/add-retry-queue/plan.md'],
+    bytesRead: 200,
+  });
+  assert.equal(state.handoffsWritten, 0);
 });
 
 // --- findStaleSessionStates -------------------------------------------------

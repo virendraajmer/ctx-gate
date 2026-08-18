@@ -13,6 +13,7 @@ const { countTokens: gptCountTokens } = require('gpt-tokenizer');
 const AGENTS_MD_BUDGET = 1500;
 const INSTRUCTIONS_BUDGET = 800;
 const SKILL_BUDGET = 1000;
+const CONTEXT_MD_BUDGET = 1000;
 
 /**
  * @param {string} text
@@ -32,4 +33,4 @@ function checkBudget(text, limitTokens) {
   return { ok: count <= limitTokens, count, limit: limitTokens };
 }
 
-module.exports = { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, countTokens, checkBudget };
+module.exports = { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, CONTEXT_MD_BUDGET, countTokens, checkBudget };

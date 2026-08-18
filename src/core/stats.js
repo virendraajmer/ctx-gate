@@ -35,6 +35,7 @@ function computeSessionStats(states, now = new Date()) {
   const weekly = states.filter((s) => withinWindow(s, now, STATS_WINDOW_DAYS));
   const turnCounts = weekly.map((s) => s.turnCount || 0);
   const pipelineTurns = weekly.reduce((sum, s) => sum + (s.pipelineTurns || 0), 0);
+  const handoffsWritten = weekly.reduce((sum, s) => sum + (s.handoffsWritten || 0), 0);
 
   let sessionsCrossedSoft = 0;
   let sessionsCrossedHard = 0;
@@ -64,6 +65,7 @@ function computeSessionStats(states, now = new Date()) {
     sessionsCrossedSoft,
     sessionsCrossedHard,
     pipelineTurns,
+    handoffsWritten,
     mostReread,
   };
 }

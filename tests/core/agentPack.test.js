@@ -17,7 +17,9 @@ const {
   classifyDrift,
   loadPackManifest,
   AGENT_FILES,
+  HANDOFF_SKILL_FILE,
   PACK_DIR,
+  isHandoffInstalled,
 } = require('../../src/core/agentPack');
 
 function sha256(text) {
@@ -42,7 +44,7 @@ test('install on a clean repo writes files byte-identical to the bundle (no subs
   const dir = tmpRepo();
   try {
     const { results } = install(dir);
-    assert.equal(results.length, AGENT_FILES.length);
+    assert.equal(results.length, AGENT_FILES.length + 1); // + the handoff skill, installed unconditionally
     assert.ok(results.every((r) => r.status === 'written'));
 
     for (const filename of AGENT_FILES) {
@@ -50,6 +52,72 @@ test('install on a clean repo writes files byte-identical to the bundle (no subs
       const bundled = fs.readFileSync(path.join(PACK_DIR, filename), 'utf8');
       assert.equal(installed, bundled);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- handoff skill installation ------------------------------------------
+
+test('install writes the handoff skill alongside the four agents, byte-identical to the bundle', () => {
+  const dir = tmpRepo();
+  try {
+    const { results } = install(dir);
+    const handoff = results.find((r) => r.file === `.github/skills/${HANDOFF_SKILL_FILE}`);
+    assert.equal(handoff.status, 'written');
+
+    const installed = fs.readFileSync(path.join(dir, '.github', 'skills', 'handoff', 'SKILL.md'), 'utf8');
+    const bundled = fs.readFileSync(path.join(PACK_DIR, 'handoff', 'SKILL.md'), 'utf8');
+    assert.equal(installed, bundled);
+    assert.equal(isHandoffInstalled(dir), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('isHandoffInstalled is false before install runs', () => {
+  const dir = tmpRepo();
+  try {
+    assert.equal(isHandoffInstalled(dir), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('install never overwrites a hand-edited handoff skill — reports conflict with a diff', () => {
+  const dir = tmpRepo();
+  try {
+    const skillDir = path.join(dir, '.github', 'skills', 'handoff');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# a hand-edited handoff skill\n', 'utf8');
+
+    const { results } = install(dir);
+    const handoff = results.find((r) => r.file === `.github/skills/${HANDOFF_SKILL_FILE}`);
+    assert.equal(handoff.status, 'conflict');
+    assert.match(handoff.diffText, /existing/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('update applies a safe (pack-only) change to the handoff skill', () => {
+  const dir = tmpRepo();
+  try {
+    install(dir);
+    const target = path.join(dir, '.github', 'skills', 'handoff', 'SKILL.md');
+    const oldContent = '# old handoff skill body\n';
+    fs.writeFileSync(target, oldContent, 'utf8');
+    const statePath = path.join(dir, '.context-ops', 'agent-pack.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.files[HANDOFF_SKILL_FILE] = sha256(oldContent);
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
+
+    const { results } = update(dir);
+    const handoff = results.find((r) => r.file === `.github/skills/${HANDOFF_SKILL_FILE}`);
+    assert.equal(handoff.status, 'safe-to-apply');
+
+    const bundled = fs.readFileSync(path.join(PACK_DIR, 'handoff', 'SKILL.md'), 'utf8');
+    assert.equal(fs.readFileSync(target, 'utf8'), bundled);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -1,18 +1,19 @@
 'use strict';
 
 // `ctx-gate configure` — lets a developer answer (or re-answer) one of the
-// `ctx-gate init` standing questions, or add a feature-word mapping,
-// without re-running init or hand-editing YAML. Read-modify-write over the
-// same standing.yml/features.yml files init writes, so `check` picks up
-// the change immediately.
+// `ctx-gate init` standing questions without re-running init or
+// hand-editing YAML. Read-modify-write over the same standing.yml file
+// init writes, so `check` picks up the change immediately. Glossary
+// vocabulary has its own command group — see `ctx-gate glossary` in
+// src/core/glossary.js.
 
 const store = require('../memory/store');
 const { STANDING_QUESTION_DEFS } = require('./standingQuestions');
-const { emptyStanding, emptyFeatures } = require('../memory/schema');
+const { emptyStanding } = require('../memory/schema');
 
 /**
  * @param {string} repoRoot
- * @returns {{ standing: Array<{id: string, prompt: string, value: string, status: string}>, features: Array<{word: string, paths: string[]}> }}
+ * @returns {{ standing: Array<{id: string, prompt: string, value: string, status: string}> }}
  */
 function listConfigurable(repoRoot) {
   const standing = store.readStanding(repoRoot);
@@ -27,10 +28,7 @@ function listConfigurable(repoRoot) {
     return { id: q.id, prompt: q.prompt, value: def || '', status: 'default' };
   });
 
-  const features = store.readFeatures(repoRoot);
-  const featureRows = ((features && features.mappings) || []).map((m) => ({ word: m.word, paths: m.paths }));
-
-  return { standing: standingRows, features: featureRows };
+  return { standing: standingRows };
 }
 
 /**
@@ -61,22 +59,4 @@ function setStandingAnswer(repoRoot, id, value) {
   return entry;
 }
 
-/**
- * @param {string} repoRoot
- * @param {string} word
- * @param {string} folderPath
- * @returns {{ word: string, paths: string[] }}
- */
-function setFeatureMapping(repoRoot, word, folderPath) {
-  const features = store.readFeatures(repoRoot) || emptyFeatures();
-  const existing = features.mappings.find((m) => m.word === word);
-  if (existing) {
-    if (!existing.paths.includes(folderPath)) existing.paths.push(folderPath);
-  } else {
-    features.mappings.push({ word, paths: [folderPath] });
-  }
-  store.writeFeatures(repoRoot, features);
-  return features.mappings.find((m) => m.word === word);
-}
-
-module.exports = { listConfigurable, setStandingAnswer, setFeatureMapping };
+module.exports = { listConfigurable, setStandingAnswer };

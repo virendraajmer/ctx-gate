@@ -1,7 +1,7 @@
 'use strict';
 
 // Canonical shapes for manifest.json / standing.yml / learned.yml /
-// features.yml / config.yml / config.local.yml. Referenced by store.js
+// glossary.yml / config.yml / config.local.yml. Referenced by store.js
 // and by every module that reads or writes these files, so the shape
 // only needs to change in one place.
 
@@ -90,11 +90,13 @@ function emptyStanding() {
   return { version: 1, entries: [] };
 }
 
+const GLOSSARY_STATUS = ['confirmed', 'inferred', 'candidate'];
+
 /**
- * @returns {Object} an empty features.yml shape
+ * @returns {Object} an empty glossary.yml shape
  */
-function emptyFeatures() {
-  return { version: 1, mappings: [] };
+function emptyGlossary() {
+  return { version: 1, terms: [] };
 }
 
 /**
@@ -118,6 +120,7 @@ function emptySessionState(sessionId, timestamp) {
     estimatedBytesRead: 0,
     warningsEmitted: 0,
     pipelineTurns: 0,
+    handoffsWritten: 0,
     startedAt: timestamp,
     lastSeenAt: timestamp,
   };
@@ -127,6 +130,7 @@ module.exports = {
   MANIFEST_SCHEMA_VERSION,
   STANDING_SLOTS,
   STANDING_STATUS,
+  GLOSSARY_STATUS,
   ENFORCEMENT_LEVELS,
   DEFAULT_SESSION_WARN_AT,
   DEFAULT_SESSION_WARN_HARD_AT,
@@ -137,7 +141,7 @@ module.exports = {
   defaultTeamConfig,
   defaultLocalConfig,
   emptyStanding,
-  emptyFeatures,
+  emptyGlossary,
   emptyLearned,
   emptySessionState,
 };

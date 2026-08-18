@@ -34,7 +34,7 @@ test('a Copilot stdin payload round-trips through parseCheckInput -> runCheck ->
     manifest,
     standing: { entries: [] },
     learned: { patterns: [] },
-    features: { mappings: [] },
+    glossary: { terms: [] },
     searchCode: async () => [],
     sessionCache: {},
   });

@@ -60,6 +60,21 @@ test('computeSessionStats reports pipelineTurns as 0 when absent from session st
   assert.equal(report.pipelineTurns, 0);
 });
 
+test('computeSessionStats sums handoffsWritten across sessions within the window, excluding stale ones', () => {
+  const states = [
+    state({ handoffsWritten: 1 }),
+    state({ handoffsWritten: 2 }),
+    state({ handoffsWritten: 100, lastSeenAt: '2025-12-01T00:00:00.000Z' }), // stale, excluded
+  ];
+  const report = computeSessionStats(states, NOW);
+  assert.equal(report.handoffsWritten, 3);
+});
+
+test('computeSessionStats reports handoffsWritten as 0 when absent from session state', () => {
+  const report = computeSessionStats([state()], NOW);
+  assert.equal(report.handoffsWritten, 0);
+});
+
 test('computeSessionStats counts sessions that crossed the soft/hard warning thresholds', () => {
   const states = [
     state({ warningsEmitted: 0 }),

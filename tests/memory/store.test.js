@@ -49,22 +49,25 @@ test('writeStanding/readStanding round-trip through YAML', () => {
   }
 });
 
-test('writeFeatures/readFeatures round-trip through YAML', () => {
+test('writeGlossary/readGlossary round-trip through YAML', () => {
   const dir = tmpRepo();
   try {
-    const features = { version: 1, mappings: [{ word: 'orders', paths: ['src/features/orders'] }] };
-    store.writeFeatures(dir, features);
+    const glossary = {
+      version: 1,
+      terms: [{ term: 'orders', aka: [], definition: 'Placed customer orders.', paths: ['src/features/orders'], status: 'confirmed', hits: 0 }],
+    };
+    store.writeGlossary(dir, glossary);
 
-    assert.deepEqual(store.readFeatures(dir), features);
+    assert.deepEqual(store.readGlossary(dir), glossary);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('readFeatures returns null before writeFeatures is ever called', () => {
+test('readGlossary returns null before writeGlossary is ever called', () => {
   const dir = tmpRepo();
   try {
-    assert.equal(store.readFeatures(dir), null);
+    assert.equal(store.readGlossary(dir), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -247,6 +250,26 @@ test('writeTeamConfig annotates the session-warning keys with explanatory commen
     const onDisk = fs.readFileSync(path.join(dir, '.context-ops', 'config.yml'), 'utf8');
     assert.match(onDisk, /# Soft long-session warning threshold[\s\S]*sessionWarnAt:/);
     assert.match(onDisk, /# Set to false to disable the long-session cost warning entirely\.\nsessionWarnings:/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readUnknownTerms returns {} before writeUnknownTerms is ever called', () => {
+  const dir = tmpRepo();
+  try {
+    assert.deepEqual(store.readUnknownTerms(dir), {});
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeUnknownTerms/readUnknownTerms round-trip through JSON', () => {
+  const dir = tmpRepo();
+  try {
+    const state = { reconciliation: { term: 'reconciliation', sessions: ['s1', 's2'], firstSeen: 't1', lastSeen: 't2' } };
+    store.writeUnknownTerms(dir, state);
+    assert.deepEqual(store.readUnknownTerms(dir), state);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

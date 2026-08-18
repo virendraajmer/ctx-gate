@@ -1,10 +1,14 @@
 'use strict';
 
 // `ctx-gate optimize` — the Context Optimizer. Scans a target repo and
-// writes/diffs AGENTS.md, .github/instructions/*.instructions.md, and
-// .github/skills/*/SKILL.md, all budget-checked via tokenBudget.js and
+// writes/diffs AGENTS.md, CONTEXT.md, .github/instructions/*.instructions.md,
+// and .github/skills/*/SKILL.md, all budget-checked via tokenBudget.js and
 // diffed against any existing version before writing. Every claim is
-// tagged with a real evidence path (never fabricated).
+// tagged with a real evidence path (never fabricated). CONTEXT.md renders
+// glossary.yml's confirmed/inferred terms (see src/core/glossary.js) —
+// glossary.yml is the source of truth, this file is the agent-facing
+// rendering of it, same single-source-two-outputs pattern as standing.yml
+// -> AGENTS.md's efficiency block.
 
 const fs = require('fs');
 const path = require('path');
@@ -12,7 +16,7 @@ const yaml = require('js-yaml');
 const { createTwoFilesPatch } = require('diff');
 
 const { sniffErrorHandling } = require('./standingSniffers');
-const { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, checkBudget, countTokens } = require('../tokenBudget');
+const { AGENTS_MD_BUDGET, INSTRUCTIONS_BUDGET, SKILL_BUDGET, CONTEXT_MD_BUDGET, checkBudget, countTokens } = require('../tokenBudget');
 const { resolveTestCommand, buildEfficiencyBlock } = require('./efficiencyBlock');
 const { MCP_GUIDANCE_BLOCK } = require('./mcpGuidance');
 const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
@@ -185,7 +189,106 @@ function scanForOptimizer(repoRoot, manifest) {
 
   const mcpGuidanceBlock = codebaseMemoryClient.isAvailable() ? MCP_GUIDANCE_BLOCK : null;
 
-  return { stacksPresent, summary, efficiencyBlock, mcpGuidanceBlock, alwaysTrue, instructionsGroups, skillGroups };
+  const store = require('../memory/store');
+  const glossary = store.readGlossary(repoRoot);
+  const contextTerms = selectContextTerms(glossary);
+
+  // Real evidence, not a fabricated checklist: the developer's own confirmed
+  // standing.yml answer to "what does done mean here" (see
+  // src/core/standingQuestions.js), surfaced as a sharp completion
+  // criterion on generated skill files rather than left implicit.
+  const standing = store.readStanding(repoRoot);
+  const acceptanceEntry = ((standing && standing.entries) || []).find((e) => e.slot === 'acceptance' && e.status === 'confirmed');
+  const acceptanceCriterion = acceptanceEntry ? acceptanceEntry.value : null;
+
+  return {
+    stacksPresent,
+    summary,
+    efficiencyBlock,
+    mcpGuidanceBlock,
+    alwaysTrue,
+    instructionsGroups,
+    skillGroups,
+    contextTerms,
+    hasContextMd: contextTerms.length > 0,
+    acceptanceCriterion,
+  };
+}
+
+/**
+ * `confirmed`/`inferred` glossary.yml terms only (never `candidate`),
+ * sorted by hits descending so the most-used vocabulary renders first in
+ * CONTEXT.md — see addon-6 Part 1.
+ *
+ * @param {Object|null} glossary
+ * @returns {Object[]}
+ */
+function selectContextTerms(glossary) {
+  const terms = (glossary && glossary.terms) || [];
+  return terms
+    .filter((t) => t.status === 'confirmed' || t.status === 'inferred')
+    .slice()
+    .sort((a, b) => (b.hits || 0) - (a.hits || 0) || a.term.localeCompare(b.term));
+}
+
+/**
+ * @param {Object[]} terms - as returned by selectContextTerms
+ * @param {Object} [opts] - { maxTerms } used internally by budgetedContextMd's trim-to-budget path
+ * @returns {string} CONTEXT.md content
+ */
+function renderContextMd(terms, opts = {}) {
+  const maxTerms = opts.maxTerms != null ? opts.maxTerms : terms.length;
+  const shown = terms.slice(0, maxTerms);
+  const omitted = terms.length - shown.length;
+
+  const lines = [
+    '# CONTEXT.md',
+    '',
+    'Shared vocabulary for this repo. A defined term below already specifies',
+    'what you mean — trust it instead of re-deriving the meaning by reading code.',
+    '',
+  ];
+
+  for (const t of shown) {
+    lines.push(`## ${t.term}`);
+    if (t.aka && t.aka.length > 0) {
+      lines.push(`aka: ${t.aka.join(', ')}`);
+    }
+    lines.push(t.definition || '');
+    if (t.paths && t.paths.length > 0) {
+      lines.push(`Paths: ${t.paths.join(', ')}`);
+    }
+    lines.push('');
+  }
+
+  if (omitted > 0) {
+    lines.push(`_${omitted} more term${omitted === 1 ? '' : 's'} omitted to stay under budget — see glossary.yml._`, '');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * @param {Object[]} terms - as returned by selectContextTerms
+ * @returns {string}
+ */
+function budgetedContextMd(terms) {
+  let maxTerms = terms.length;
+  let content = renderContextMd(terms, { maxTerms });
+  let result = checkBudget(content, CONTEXT_MD_BUDGET);
+
+  // Same never-silently-truncate contract as AGENTS.md: progressively drop
+  // the lowest-hits terms and say how many were omitted, rather than
+  // cutting the file off mid-render.
+  while (maxTerms > 0 && !result.ok) {
+    maxTerms -= 1;
+    content = renderContextMd(terms, { maxTerms });
+    result = checkBudget(content, CONTEXT_MD_BUDGET);
+  }
+  if (!result.ok) {
+    throw new BudgetExceededError('CONTEXT.md', result.count, CONTEXT_MD_BUDGET);
+  }
+  return content;
 }
 
 function formatEvidence(evidence) {
@@ -214,8 +317,11 @@ function renderAgentsMd(facts, opts = {}) {
     lines.push('');
   }
 
-  if (facts.instructionsGroups.length > 0 || facts.skillGroups.length > 0) {
+  if (facts.hasContextMd || facts.instructionsGroups.length > 0 || facts.skillGroups.length > 0) {
     lines.push('## Routing', '');
+    if (facts.hasContextMd) {
+      lines.push('- Shared vocabulary (a defined term already specifies what you mean): `CONTEXT.md`');
+    }
     for (const g of facts.instructionsGroups) {
       lines.push(`- ${g.title} conventions: \`.github/instructions/${g.id}.instructions.md\``);
     }
@@ -257,6 +363,7 @@ function renderSkillFiles(facts) {
       '',
       ...g.rules.map((r) => `- ${r.claim}${formatEvidence(r.evidence)}`),
       '',
+      ...(facts.acceptanceCriterion ? [`Done when: ${facts.acceptanceCriterion}`, ''] : []),
     ].join('\n'),
   }));
 }
@@ -295,11 +402,11 @@ function budgetedInstructionsFiles(facts) {
 function budgetedSkillFiles(facts) {
   const out = [];
   for (const group of facts.skillGroups) {
-    let files = renderSkillFiles({ skillGroups: [group] });
+    let files = renderSkillFiles({ skillGroups: [group], acceptanceCriterion: facts.acceptanceCriterion });
     let over = files.find((f) => !checkBudget(f.body, SKILL_BUDGET).ok);
     if (over && group.rules.length > 1) {
       const halves = splitGroupInHalf(group);
-      files = renderSkillFiles({ skillGroups: halves });
+      files = renderSkillFiles({ skillGroups: halves, acceptanceCriterion: facts.acceptanceCriterion });
       over = files.find((f) => !checkBudget(f.body, SKILL_BUDGET).ok);
     }
     if (over) {
@@ -363,6 +470,7 @@ async function optimize(repoRoot, opts = {}) {
   const facts = scanForOptimizer(repoRoot, manifest);
 
   const agentsMd = budgetedAgentsMd(facts);
+  const contextMd = budgetedContextMd(facts.contextTerms);
   const instructionsFiles = budgetedInstructionsFiles(facts);
   const skillFiles = budgetedSkillFiles(facts);
   const efficiencyBlockTokens = countTokens(facts.efficiencyBlock);
@@ -374,6 +482,13 @@ async function optimize(repoRoot, opts = {}) {
   diffs.push({ path: 'AGENTS.md', ...agentsDiff });
   if (opts.write && agentsDiff.changed) {
     fs.writeFileSync(agentsPath, agentsMd, 'utf8');
+  }
+
+  const contextPath = path.join(repoRoot, 'CONTEXT.md');
+  const contextDiff = diffAgainstExisting(contextPath, contextMd);
+  diffs.push({ path: 'CONTEXT.md', ...contextDiff });
+  if (opts.write && contextDiff.changed) {
+    fs.writeFileSync(contextPath, contextMd, 'utf8');
   }
 
   for (const file of instructionsFiles) {
@@ -399,13 +514,15 @@ async function optimize(repoRoot, opts = {}) {
     }
   }
 
-  return { agentsMd, instructionsFiles, skillFiles, diffs, efficiencyBlockTokens };
+  return { agentsMd, contextMd, instructionsFiles, skillFiles, diffs, efficiencyBlockTokens };
 }
 
 module.exports = {
   BudgetExceededError,
   scanForOptimizer,
+  selectContextTerms,
   renderAgentsMd,
+  renderContextMd,
   renderInstructionsFiles,
   renderSkillFiles,
   diffAgainstExisting,
