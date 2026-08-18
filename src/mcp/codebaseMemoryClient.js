@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn: nodeSpawn } = require('child_process');
+const { spawnJsonRpcClient, killIfOwned } = require('./jsonRpcStdio');
 
 const SEARCH_TIMEOUT_MS = 1500; // stays inside the ~2s hook budget
 const INDEX_BUILD_TIMEOUT_MS = 30000;
@@ -102,56 +102,12 @@ function appendMcpLog(repoRoot, text) {
  * @returns {{ proc: import('child_process').ChildProcess, request: (method: string, params?: Object) => Promise<Object> }}
  */
 function spawnClient(opts = {}) {
-  const spawnFn = opts.spawn || nodeSpawn;
-  const proc = spawnFn(BIN_NAME, ['mcp'], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-  let buffer = '';
-  const pending = new Map();
-  let nextId = 1;
-
-  proc.stdout.on('data', (chunk) => {
-    buffer += chunk.toString('utf8');
-    let idx = buffer.indexOf('\n');
-    while (idx !== -1) {
-      const line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      idx = buffer.indexOf('\n');
-      if (!line.trim()) continue;
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const resolver = pending.get(msg.id);
-      if (resolver) {
-        pending.delete(msg.id);
-        resolver(msg);
-      }
-    }
+  return spawnJsonRpcClient({
+    command: BIN_NAME,
+    args: ['mcp'],
+    spawn: opts.spawn,
+    onStderr: (text) => appendMcpLog(opts.repoRoot, text),
   });
-
-  if (proc.stderr) {
-    proc.stderr.on('data', (chunk) => appendMcpLog(opts.repoRoot, chunk.toString('utf8')));
-  }
-
-  function request(method, params) {
-    const id = nextId;
-    nextId += 1;
-    const payload = `${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`;
-    return new Promise((resolve) => {
-      pending.set(id, resolve);
-      proc.stdin.write(payload);
-    });
-  }
-
-  return { proc, request };
-}
-
-function killIfOwned(client, opts) {
-  if (!opts.client && client.proc && !client.proc.killed) {
-    client.proc.kill();
-  }
 }
 
 /**

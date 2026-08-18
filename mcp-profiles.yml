@@ -1,0 +1,12 @@
+# Stack -> MCP server suggestions printed by `ctx-gate init` (see
+# src/core/init.js). Print-only: init never writes to a target repo's
+# .vscode/mcp.json and never installs anything, same as the existing
+# manual-guide-only rule for codebase-memory-mcp.
+base:
+  - codebase-memory
+react:
+  suggest: [playwright]     # only when the repo has e2e tests
+dotnet:
+  suggest: []
+python:
+  suggest: []

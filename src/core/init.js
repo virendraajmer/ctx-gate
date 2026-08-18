@@ -16,6 +16,7 @@ const store = require('../memory/store');
 const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
 const { writeHooksFile } = require('./hooks');
 const { validate: validateAgentPack } = require('./agentPack');
+const { suggestServers } = require('./mcpProfiles');
 
 const DEFAULT_CTX_GATE_JS_PATH = require.resolve(path.join('..', '..', 'bin', 'ctx-gate.js'));
 
@@ -29,7 +30,7 @@ const DEFAULT_CTX_GATE_JS_PATH = require.resolve(path.join('..', '..', 'bin', 'c
  *   package's own bin/ctx-gate.js (correct for both a global npm install and a
  *   version-pinned copy made by install.ps1/install.sh, since each runs its own
  *   physical bin/ctx-gate.js).
- * @returns {Promise<{ manifest: Object, standing: Object, features: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null, mcpIndexResult: {success: boolean, message: string}|null, hooksPath: string }>}
+ * @returns {Promise<{ manifest: Object, standing: Object, features: Object, learned: Object, mcpAvailable: boolean, mcpGuidance: string|null, mcpIndexResult: {success: boolean, message: string}|null, hooksPath: string, mcpServerSuggestions: string[] }>}
  */
 async function init(repoRoot, opts = {}) {
   const manifest = emptyManifest();
@@ -116,7 +117,20 @@ async function init(repoRoot, opts = {}) {
     agentPackReport = null;
   }
 
-  return { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath, agentPackReport };
+  const mcpServerSuggestions = suggestServers(manifest);
+
+  return {
+    manifest,
+    standing,
+    features,
+    learned,
+    mcpAvailable,
+    mcpGuidance,
+    mcpIndexResult,
+    hooksPath,
+    agentPackReport,
+    mcpServerSuggestions,
+  };
 }
 
 module.exports = { init };

@@ -91,8 +91,18 @@ async function main(argv) {
     case 'init': {
       const { init } = require('../src/core/init');
       const repoRoot = process.cwd();
-      const { manifest, standing, features, learned, mcpAvailable, mcpGuidance, mcpIndexResult, hooksPath, agentPackReport } =
-        await init(repoRoot, { ctxGateJsPath: __filename });
+      const {
+        manifest,
+        standing,
+        features,
+        learned,
+        mcpAvailable,
+        mcpGuidance,
+        mcpIndexResult,
+        hooksPath,
+        agentPackReport,
+        mcpServerSuggestions,
+      } = await init(repoRoot, { ctxGateJsPath: __filename });
       process.stdout.write('ctx-gate: wrote .context-ops/manifest.json\n');
       process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
       process.stdout.write('ctx-gate: wrote .context-ops/memory/standing.yml\n');
@@ -113,6 +123,12 @@ async function main(argv) {
           `ctx-gate: ${agentPackReport.errorCount} error(s) found in existing *.agent.md files — run \`ctx-gate agents validate\` for details.\n`
         );
       }
+      if (mcpServerSuggestions && mcpServerSuggestions.length > 0) {
+        process.stdout.write(
+          `ctx-gate: suggested MCP servers for this stack: ${mcpServerSuggestions.join(', ')} ` +
+            '(not installed or written — add them to .vscode/mcp.json yourself if useful)\n'
+        );
+      }
       return;
     }
     case 'mcp-check': {
@@ -121,6 +137,169 @@ async function main(argv) {
       const { success, message } = await runIndexBuildAndConfirm(repoRoot);
       process.stdout.write(`${message}\n`);
       process.exitCode = success ? 0 : 1;
+      return;
+    }
+    case 'mcp-audit': {
+      // Manual command, not a hook — starts every declared server, so it
+      // may take several seconds. Must never run on a hook path.
+      const store = require('../src/memory/store');
+      const mcpAudit = require('../src/mcp/mcpAudit');
+      const repoRoot = process.cwd();
+
+      const mcpJson = mcpAudit.readMcpJson(repoRoot);
+      if (!mcpJson.ok) {
+        process.stdout.write(
+          mcpJson.reason === 'absent'
+            ? 'ctx-gate: no .vscode/mcp.json found in this repo — nothing to audit.\n'
+            : 'ctx-gate: .vscode/mcp.json is malformed — fix it and re-run.\n'
+        );
+        return;
+      }
+      const serverNames = Object.keys(mcpJson.servers);
+      if (serverNames.length === 0) {
+        process.stdout.write('ctx-gate: .vscode/mcp.json declares no servers.\n');
+        return;
+      }
+
+      const { team } = store.readConfig(repoRoot);
+      const mcpConfig = (team && team.mcp) || {};
+
+      process.stdout.write('ctx-gate: measuring declared MCP servers (starts each one — may take a few seconds)...\n\n');
+      const measurements = await mcpAudit.measureAllServers(mcpJson.servers);
+
+      const now = new Date();
+      let usage = store.readMcpUsage(repoRoot);
+      const stubResult = mcpAudit.ensureUsageStubs(usage, serverNames, now.toISOString());
+      if (stubResult.changed) {
+        store.writeMcpUsage(repoRoot, stubResult.usage);
+      }
+      usage = stubResult.usage;
+
+      const report = mcpAudit.buildAuditReport(measurements, usage, mcpConfig, now);
+      const unusedAfterDays = mcpConfig.unusedAfterDays ?? mcpAudit.DEFAULT_MCP_UNUSED_AFTER_DAYS;
+
+      process.stdout.write('Workspace servers (.vscode/mcp.json)\n\n');
+      const header = `  ${'Server'.padEnd(20)}${'Tools'.padEnd(15)}${'Tokens/request'.padEnd(17)}Used (${unusedAfterDays}d)`;
+      process.stdout.write(`${header}\n`);
+      process.stdout.write(`  ${'-'.repeat(Math.max(header.length - 2, 10))}\n`);
+      for (const row of report.rows) {
+        const toolsCell = row.measured ? String(row.toolCount) : 'not measured';
+        const tokensCell = row.measured ? row.tokens.toLocaleString() : 'not measured';
+        const usedCell = row.measured ? `${row.calls} calls` : 'not measured';
+        process.stdout.write(`  ${row.name.padEnd(20)}${toolsCell.padEnd(15)}${tokensCell.padEnd(17)}${usedCell}\n`);
+      }
+      process.stdout.write(`  ${'-'.repeat(Math.max(header.length - 2, 10))}\n`);
+      process.stdout.write(`  ${'Total'.padEnd(20)}${String(report.totalTools).padEnd(15)}${report.totalTokens.toLocaleString()}\n\n`);
+      process.stdout.write(
+        `  Every request in this workspace carries ${report.totalTokens.toLocaleString()} tokens of tool\n` +
+          '  definitions before you type anything.\n\n'
+      );
+
+      if (report.unused.length > 0) {
+        for (const u of report.unused) {
+          process.stdout.write(`  Unused in ${unusedAfterDays} days: ${u.name}  ->  ${u.tokens.toLocaleString()} tokens/request\n`);
+        }
+        process.stdout.write('  Run `ctx-gate mcp-trim` to see a proposed change.\n\n');
+      }
+
+      process.stdout.write(
+        '  Note: this covers repo-declared servers only. Servers enabled in your\n' +
+          '  personal VS Code profile load in every workspace and cannot be read or\n' +
+          '  changed by ctx-gate.\n'
+      );
+
+      if (report.exceedsWarn) {
+        process.stdout.write(
+          `\nctx-gate: warning — workspace MCP tool definitions total ${report.totalTokens.toLocaleString()} tokens, ` +
+            `above the configured warnAboveTokens (${report.warnAboveTokens.toLocaleString()}).\n`
+        );
+      }
+      return;
+    }
+    case 'mcp-trim': {
+      // Manual command, not a hook. Proposes a diff, requires explicit
+      // confirmation, never commits on the developer's behalf.
+      const store = require('../src/memory/store');
+      const mcpAudit = require('../src/mcp/mcpAudit');
+      const repoRoot = process.cwd();
+
+      const mcpJson = mcpAudit.readMcpJson(repoRoot);
+      if (!mcpJson.ok) {
+        process.stdout.write(
+          mcpJson.reason === 'absent'
+            ? 'ctx-gate: no .vscode/mcp.json found in this repo — nothing to trim.\n'
+            : 'ctx-gate: .vscode/mcp.json is malformed — fix it and re-run.\n'
+        );
+        return;
+      }
+      const serverNames = Object.keys(mcpJson.servers);
+      if (serverNames.length === 0) {
+        process.stdout.write('ctx-gate: .vscode/mcp.json declares no servers.\n');
+        return;
+      }
+
+      const { team } = store.readConfig(repoRoot);
+      const mcpConfig = (team && team.mcp) || {};
+
+      process.stdout.write('ctx-gate: measuring declared MCP servers (starts each one — may take a few seconds)...\n\n');
+      const measurements = await mcpAudit.measureAllServers(mcpJson.servers);
+
+      const now = new Date();
+      let usage = store.readMcpUsage(repoRoot);
+      const stubResult = mcpAudit.ensureUsageStubs(usage, serverNames, now.toISOString());
+      if (stubResult.changed) {
+        store.writeMcpUsage(repoRoot, stubResult.usage);
+      }
+      usage = stubResult.usage;
+
+      const report = mcpAudit.buildAuditReport(measurements, usage, mcpConfig, now);
+      const proposal = mcpAudit.buildTrimProposal(report.rows, mcpConfig);
+
+      for (const w of proposal.insufficientWindow) {
+        process.stdout.write(
+          `ctx-gate: ${w.name} — only ${w.daysCovered} of ${w.neededDays} days of usage data so far, ` +
+            'refusing to recommend removal yet.\n'
+        );
+      }
+      for (const s of proposal.notMeasuredSkipped) {
+        process.stdout.write(
+          `ctx-gate: ${s.name} — not measured, never proposed for removal (absence of a measurement ` +
+            'is not evidence it is unused).\n'
+        );
+      }
+
+      if (proposal.candidates.length === 0) {
+        process.stdout.write('ctx-gate: no servers currently qualify for removal.\n');
+        return;
+      }
+
+      const names = proposal.candidates.map((c) => c.name);
+      const { diffText, nextText } = mcpAudit.buildTrimDiff(mcpJson, names);
+      const totalSaved = proposal.candidates.reduce((sum, c) => sum + (c.tokens || 0), 0);
+
+      process.stdout.write('\nProposed change to .vscode/mcp.json:\n\n');
+      process.stdout.write(`${diffText}\n`);
+      for (const c of proposal.candidates) {
+        process.stdout.write(`  - ${c.name}: saves ${c.tokens.toLocaleString()} tokens/request\n`);
+      }
+      process.stdout.write(`  Total: ${totalSaved.toLocaleString()} tokens/request\n\n`);
+
+      const readline = require('readline/promises');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+      let answer;
+      try {
+        answer = (await rl.question('Apply this change to .vscode/mcp.json? [y/N] ')).trim().toLowerCase();
+      } finally {
+        rl.close();
+      }
+      if (answer !== 'y' && answer !== 'yes') {
+        process.stdout.write('ctx-gate: not applied.\n');
+        return;
+      }
+
+      const mcpJsonPath = path.join(repoRoot, '.vscode', 'mcp.json');
+      fs.writeFileSync(mcpJsonPath, nextText, 'utf8');
+      process.stdout.write('ctx-gate: wrote .vscode/mcp.json. This was not committed — commit it yourself when ready.\n');
       return;
     }
     case 'check': {
@@ -286,6 +465,21 @@ async function main(argv) {
           const staleIds = findStaleSessionStates(allStates, new Date(request.timestamp));
           for (const staleId of staleIds) {
             store.deleteSessionStateFile(repoRoot, staleId);
+          }
+        } catch (err) {
+          logHookError(repoRoot, 'learn', err);
+        }
+
+        // MCP per-server usage counting for `ctx-gate mcp-audit`/`mcp-trim`.
+        // Isolated in its own try/catch for the same reason as session cost
+        // tracking above — a corrupt mcp-usage.json must not undo the
+        // answers.jsonl/learned.yml writes already made.
+        try {
+          const { recordMcpUsage } = require('../src/core/learn');
+          const usage = store.readMcpUsage(repoRoot);
+          const updatedUsage = recordMcpUsage(usage, request.toolName, request.timestamp);
+          if (updatedUsage !== usage) {
+            store.writeMcpUsage(repoRoot, updatedUsage);
           }
         } catch (err) {
           logHookError(repoRoot, 'learn', err);

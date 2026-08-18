@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { recordAndPromote, updateSessionState, findStaleSessionStates } = require('../../src/core/learn');
+const { recordAndPromote, updateSessionState, findStaleSessionStates, parseMcpServerName, recordMcpUsage } = require('../../src/core/learn');
 
 const manifest = {
   stacks: {
@@ -162,6 +162,46 @@ test('findStaleSessionStates respects a custom ttlDays', () => {
   const sessionStates = [{ sessionId: 's1', state: { lastSeenAt: '2026-01-09T00:00:00.000Z' } }]; // 1 day old
   assert.deepEqual(findStaleSessionStates(sessionStates, now, 1), ['s1']);
   assert.deepEqual(findStaleSessionStates(sessionStates, now, 2), []);
+});
+
+// --- parseMcpServerName / recordMcpUsage ------------------------------------
+
+test('parseMcpServerName extracts the server from an mcp__<server>__<tool> tool name', () => {
+  assert.equal(parseMcpServerName('mcp__codebase-memory-mcp__list_projects'), 'codebase-memory-mcp');
+});
+
+test('parseMcpServerName returns null for a non-MCP tool name', () => {
+  assert.equal(parseMcpServerName('editFiles'), null);
+  assert.equal(parseMcpServerName(''), null);
+  assert.equal(parseMcpServerName(undefined), null);
+});
+
+test('recordMcpUsage returns the same reference untouched for a non-MCP tool name', () => {
+  const usage = { github: { calls: 1, lastUsed: '2026-01-01T00:00:00.000Z', firstSeen: '2026-01-01T00:00:00.000Z' } };
+  const result = recordMcpUsage(usage, 'editFiles', '2026-01-02T00:00:00.000Z');
+  assert.equal(result, usage);
+});
+
+test('recordMcpUsage creates a new server entry with firstSeen set on first call', () => {
+  const result = recordMcpUsage({}, 'mcp__playwright__navigate', '2026-01-05T00:00:00.000Z');
+  assert.deepEqual(result, {
+    playwright: { calls: 1, lastUsed: '2026-01-05T00:00:00.000Z', firstSeen: '2026-01-05T00:00:00.000Z' },
+  });
+});
+
+test('recordMcpUsage increments calls and advances lastUsed while preserving firstSeen', () => {
+  const usage = {
+    playwright: { calls: 3, lastUsed: '2026-01-05T00:00:00.000Z', firstSeen: '2026-01-01T00:00:00.000Z' },
+  };
+  const result = recordMcpUsage(usage, 'mcp__playwright__navigate', '2026-01-10T00:00:00.000Z');
+  assert.deepEqual(result.playwright, { calls: 4, lastUsed: '2026-01-10T00:00:00.000Z', firstSeen: '2026-01-01T00:00:00.000Z' });
+});
+
+test('recordMcpUsage does not mutate the usage state object it was given', () => {
+  const usage = { playwright: { calls: 1, lastUsed: '2026-01-01T00:00:00.000Z', firstSeen: '2026-01-01T00:00:00.000Z' } };
+  const snapshot = JSON.parse(JSON.stringify(usage));
+  recordMcpUsage(usage, 'mcp__playwright__navigate', '2026-01-02T00:00:00.000Z');
+  assert.deepEqual(usage, snapshot);
 });
 
 test('recordAndPromote falls back to a bare file suggestion when the touched file matches no screen', () => {

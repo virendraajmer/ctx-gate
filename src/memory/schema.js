@@ -31,6 +31,10 @@ const DEFAULT_SESSION_WARN_HARD_AT = 15000;
 // circular dependency on src/core/agentPack.js.
 const DEFAULT_AGENT_PACK_MODEL = 'Claude Sonnet 4.5';
 
+// `ctx-gate mcp-audit` / `mcp-trim` config defaults (see src/mcp/mcpAudit.js).
+const DEFAULT_MCP_UNUSED_AFTER_DAYS = 30;
+const DEFAULT_MCP_WARN_ABOVE_TOKENS = 8000;
+
 /**
  * @returns {Object} an empty manifest.json shape with every stack key present
  */
@@ -61,6 +65,11 @@ function defaultTeamConfig() {
     sessionWarnHardAt: DEFAULT_SESSION_WARN_HARD_AT,
     sessionWarnings: true,
     agentPack: { model: DEFAULT_AGENT_PACK_MODEL, commitArtifacts: false },
+    mcp: {
+      audit: true,
+      unusedAfterDays: DEFAULT_MCP_UNUSED_AFTER_DAYS,
+      warnAboveTokens: DEFAULT_MCP_WARN_ABOVE_TOKENS,
+    },
   };
 }
 
@@ -122,6 +131,8 @@ module.exports = {
   DEFAULT_SESSION_WARN_AT,
   DEFAULT_SESSION_WARN_HARD_AT,
   DEFAULT_AGENT_PACK_MODEL,
+  DEFAULT_MCP_UNUSED_AFTER_DAYS,
+  DEFAULT_MCP_WARN_ABOVE_TOKENS,
   emptyManifest,
   defaultTeamConfig,
   defaultLocalConfig,

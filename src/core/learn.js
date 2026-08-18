@@ -158,10 +158,59 @@ function findStaleSessionStates(sessionStates, now, ttlDays = SESSION_STATE_TTL_
     .map(({ sessionId }) => sessionId);
 }
 
+// Confirmed live during addon-5 development (2026-08-18) by invoking an
+// MCP tool directly in a Claude Code session and inspecting the resulting
+// tool name: `mcp__codebase-memory-mcp__list_projects`. MCP-qualified tool
+// names follow `mcp__<server-name>__<tool-name>` — note the server/tool
+// split is on the first `__` *pair* after the `mcp__` prefix, not on every
+// single underscore, since tool names themselves may contain underscores
+// (e.g. `list_projects`).
+const MCP_TOOL_NAME_RE = /^mcp__(.+?)__(.+)$/;
+
+/**
+ * @param {string} toolName
+ * @returns {string|null} the MCP server name, or null if toolName isn't
+ *   MCP-qualified (e.g. a plain editor tool like "editFiles")
+ */
+function parseMcpServerName(toolName) {
+  const match = MCP_TOOL_NAME_RE.exec(toolName || '');
+  return match ? match[1] : null;
+}
+
+/**
+ * Per-server MCP usage counting for `ctx-gate mcp-audit` / `mcp-trim` (see
+ * src/mcp/mcpAudit.js). Pure: no file I/O here, same convention as the
+ * rest of this module — bin/ctx-gate.js reads mcp-usage.json first and
+ * writes back whatever this returns. Returns the *same* object reference
+ * when toolName isn't MCP-qualified, so callers can skip the write.
+ *
+ * @param {Object} usageState - current .context-ops/state/mcp-usage.json contents
+ * @param {string} toolName
+ * @param {string} timestamp - ISO 8601
+ * @returns {Object} updated usage state
+ */
+function recordMcpUsage(usageState, toolName, timestamp) {
+  const server = parseMcpServerName(toolName);
+  if (!server) {
+    return usageState;
+  }
+  const existing = usageState[server];
+  return {
+    ...usageState,
+    [server]: {
+      calls: (existing ? existing.calls : 0) + 1,
+      lastUsed: timestamp,
+      firstSeen: (existing && existing.firstSeen) || timestamp,
+    },
+  };
+}
+
 module.exports = {
   PROMOTION_THRESHOLD,
   SESSION_STATE_TTL_DAYS,
   recordAndPromote,
   updateSessionState,
   findStaleSessionStates,
+  parseMcpServerName,
+  recordMcpUsage,
 };

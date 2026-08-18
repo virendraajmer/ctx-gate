@@ -34,6 +34,12 @@ const CONFIG_YML_COMMENTS = {
     '# most once more per session after the soft warning.',
   sessionWarnings:
     '# Set to false to disable the long-session cost warning entirely.',
+  mcp:
+    '# ctx-gate mcp-audit / mcp-trim (see .vscode/mcp.json). audit: set to false\n' +
+    '# to skip MCP cost measurement entirely. unusedAfterDays: how many days of\n' +
+    '# zero calls (and zero days short of that watched) before a server is\n' +
+    '# eligible for a trim proposal. warnAboveTokens: mcp-audit prints a warning\n' +
+    '# when the workspace\'s total measured tool-definition tokens exceed this.',
 };
 
 /**
@@ -291,6 +297,38 @@ function listSessionStates(repoRoot) {
   return entries;
 }
 
+function mcpUsagePath(repoRoot) {
+  return path.join(stateDir(repoRoot), 'mcp-usage.json');
+}
+
+/**
+ * `ctx-gate mcp-audit` / `mcp-trim` per-server call counts, keyed by MCP
+ * server name (see src/core/learn.js#recordMcpUsage and
+ * src/mcp/mcpAudit.js). Lives alongside session state under
+ * .context-ops/state/ — already gitignored by init.js, no new entry needed.
+ *
+ * @param {string} repoRoot
+ * @returns {Object} {} if the file doesn't exist yet or is corrupt
+ */
+function readMcpUsage(repoRoot) {
+  const p = mcpUsagePath(repoRoot);
+  if (!fs.existsSync(p)) {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** @param {string} repoRoot @param {Object} usage */
+function writeMcpUsage(repoRoot, usage) {
+  const dir = stateDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(mcpUsagePath(repoRoot), JSON.stringify(usage, null, 2), 'utf8');
+}
+
 /** @param {string} repoRoot @param {string} sessionId */
 function deleteSessionStateFile(repoRoot, sessionId) {
   try {
@@ -321,4 +359,6 @@ module.exports = {
   writeSessionState,
   listSessionStates,
   deleteSessionStateFile,
+  readMcpUsage,
+  writeMcpUsage,
 };

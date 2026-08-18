@@ -12,6 +12,7 @@
     "src/",
     "agent-pack/",
     "hook-templates/",
+    "mcp-profiles.yml",
     "install.sh",
     "install.ps1",
     "LICENSE",
