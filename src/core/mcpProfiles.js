@@ -1,13 +1,17 @@
 'use strict';
 
 // Stack -> MCP server suggestions printed by `ctx-gate init` (see
-// mcp-profiles.yml at the ctx-gate repo root — not the target repo). Print
-// only: never writes to the target repo's .vscode/mcp.json, never installs
-// anything, same convention as codebaseMemoryClient.js#guidanceText.
+// mcp-profiles.yml at the ctx-gate repo root — not the target repo).
+// suggestServers() only computes names to print. Writing them into the
+// target repo's .vscode/mcp.json (buildAddProposal below) happens only if
+// the developer opts in at bin/ctx-gate.js's confirm prompt — this module
+// never installs the underlying binary itself, same convention as
+// codebaseMemoryClient.js#guidanceText.
 
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const { createTwoFilesPatch } = require('diff');
 
 const PROFILES_PATH = path.join(__dirname, '..', '..', 'mcp-profiles.yml');
 
@@ -59,4 +63,72 @@ function suggestServers(manifest, profiles = loadProfiles()) {
   return [...new Set(suggestions)];
 }
 
-module.exports = { PROFILES_PATH, loadProfiles, hasE2eTests, suggestServers };
+/**
+ * @param {string} name - suggested server name (e.g. 'codebase-memory')
+ * @param {Object} [profiles]
+ * @returns {{command: string, args?: string[]}|null}
+ */
+function serverConfigFor(name, profiles = loadProfiles()) {
+  return (profiles.servers && profiles.servers[name]) || null;
+}
+
+/**
+ * Builds a proposed .vscode/mcp.json with the given suggested servers
+ * added, for `ctx-gate init` to show before prompting — mirrors
+ * src/mcp/mcpAudit.js#buildTrimDiff. Pure — no I/O.
+ *
+ * A suggested name already declared in mcpJson is left untouched
+ * (never overwritten); a suggested name with no known command spec in
+ * mcp-profiles.yml#servers is skipped rather than guessed at. This never
+ * installs the underlying binary — only proposes the config entry.
+ *
+ * @param {{ raw: Object|null, rawText: string, servers: Object }} mcpJson - readMcpJson(...) result (mcpAudit.js), or the absent/default shape
+ * @param {string[]} suggestedNames
+ * @param {Object} [profiles]
+ * @returns {{ added: string[], alreadyDeclared: string[], noKnownConfig: string[], nextJson: Object, nextText: string, diffText: string }}
+ */
+function buildAddProposal(mcpJson, suggestedNames, profiles = loadProfiles()) {
+  const existingServers = (mcpJson && mcpJson.servers) || {};
+  const added = [];
+  const alreadyDeclared = [];
+  const noKnownConfig = [];
+  const nextServers = { ...existingServers };
+
+  for (const name of suggestedNames) {
+    if (existingServers[name]) {
+      alreadyDeclared.push(name);
+      continue;
+    }
+    const config = serverConfigFor(name, profiles);
+    if (!config) {
+      noKnownConfig.push(name);
+      continue;
+    }
+    nextServers[name] = config;
+    added.push(name);
+  }
+
+  const baseJson = (mcpJson && mcpJson.raw) || { servers: {} };
+  const nextJson = { ...baseJson, servers: nextServers };
+  const nextText = `${JSON.stringify(nextJson, null, 2)}\n`;
+  const rawText = (mcpJson && mcpJson.rawText) || '';
+  const diffText = createTwoFilesPatch(
+    '.vscode/mcp.json',
+    '.vscode/mcp.json',
+    rawText,
+    nextText,
+    'existing',
+    'proposed'
+  );
+
+  return { added, alreadyDeclared, noKnownConfig, nextJson, nextText, diffText };
+}
+
+module.exports = {
+  PROFILES_PATH,
+  loadProfiles,
+  hasE2eTests,
+  suggestServers,
+  serverConfigFor,
+  buildAddProposal,
+};

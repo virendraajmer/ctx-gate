@@ -65,6 +65,62 @@ function sumFileSizes(repoRoot, filesTouched) {
   return total;
 }
 
+// Offers to write ctx-gate init's suggested MCP servers into
+// .vscode/mcp.json, same confirm-then-write pattern as `mcp-trim`
+// (bin/ctx-gate.js's mcp-trim case / src/mcp/mcpAudit.js#buildTrimDiff).
+// Only ever proposes the config entry — never installs the underlying
+// binary, preserving the SECURITY.md guarantee for codebase-memory-mcp.
+async function maybeWriteMcpJsonEntries(repoRoot, suggestedNames) {
+  const mcpAudit = require('../src/mcp/mcpAudit');
+  const mcpProfiles = require('../src/core/mcpProfiles');
+
+  const mcpJson = mcpAudit.readMcpJson(repoRoot);
+  if (!mcpJson.ok && mcpJson.reason === 'malformed') {
+    process.stdout.write('ctx-gate: .vscode/mcp.json is malformed — fix it before ctx-gate can add entries to it.\n');
+    return;
+  }
+
+  const proposal = mcpProfiles.buildAddProposal(mcpJson, suggestedNames);
+  if (proposal.alreadyDeclared.length > 0) {
+    process.stdout.write(
+      `ctx-gate: already declared in .vscode/mcp.json, skipping: ${proposal.alreadyDeclared.join(', ')}\n`
+    );
+  }
+  if (proposal.noKnownConfig.length > 0) {
+    process.stdout.write(
+      `ctx-gate: no known mcp.json entry for: ${proposal.noKnownConfig.join(', ')} — add those yourself.\n`
+    );
+  }
+  if (proposal.added.length === 0) {
+    return;
+  }
+
+  process.stdout.write('\nProposed addition to .vscode/mcp.json:\n\n');
+  process.stdout.write(`${proposal.diffText}\n`);
+
+  const readline = require('readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  let answer;
+  try {
+    answer = (await rl.question(`Add ${proposal.added.join(', ')} to .vscode/mcp.json? [y/N] `)).trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
+  if (answer !== 'y' && answer !== 'yes') {
+    process.stdout.write('ctx-gate: not added.\n');
+    return;
+  }
+
+  const mcpDir = path.join(repoRoot, '.vscode');
+  fs.mkdirSync(mcpDir, { recursive: true });
+  fs.writeFileSync(path.join(mcpDir, 'mcp.json'), proposal.nextText, 'utf8');
+  process.stdout.write(
+    'ctx-gate: wrote .vscode/mcp.json. This was not committed — commit it yourself when ready.\n' +
+      'Note: this only writes the config entry — install each server\'s own binary yourself ' +
+      '(see the guidance above for codebase-memory-mcp).\n'
+  );
+}
+
 function resolveAdapterName() {
   // --agent flag > CTX_GATE_AGENT env > config.yml#adapters.active > default
   const flagIndex = process.argv.indexOf('--agent');
@@ -126,8 +182,9 @@ async function main(argv) {
       if (mcpServerSuggestions && mcpServerSuggestions.length > 0) {
         process.stdout.write(
           `ctx-gate: suggested MCP servers for this stack: ${mcpServerSuggestions.join(', ')} ` +
-            '(not installed or written — add them to .vscode/mcp.json yourself if useful)\n'
+            '(not installed — only the config entry can be written, and only if you say yes below)\n'
         );
+        await maybeWriteMcpJsonEntries(repoRoot, mcpServerSuggestions);
       }
       return;
     }
@@ -214,6 +271,36 @@ async function main(argv) {
             `above the configured warnAboveTokens (${report.warnAboveTokens.toLocaleString()}).\n`
         );
       }
+      return;
+    }
+    case 'mcp-add': {
+      // Manual command, not a hook. Same confirm-then-write flow `init`
+      // offers inline, but callable any time later — e.g. if the developer
+      // said no during init, or the stack changed since then.
+      const repoRoot = process.cwd();
+      let names = rest.filter((arg) => !arg.startsWith('--'));
+
+      if (names.length === 0) {
+        const { suggestServers } = require('../src/core/mcpProfiles');
+        const store = require('../src/memory/store');
+        let manifest;
+        try {
+          manifest = store.readManifest(repoRoot);
+        } catch {
+          process.stdout.write(
+            'ctx-gate: no .context-ops/manifest.json found — run `ctx-gate init` first, ' +
+              'or pass server names directly: `ctx-gate mcp-add <name...>`.\n'
+          );
+          return;
+        }
+        names = suggestServers(manifest);
+        if (names.length === 0) {
+          process.stdout.write('ctx-gate: no suggested MCP servers for this stack.\n');
+          return;
+        }
+      }
+
+      await maybeWriteMcpJsonEntries(repoRoot, names);
       return;
     }
     case 'mcp-trim': {

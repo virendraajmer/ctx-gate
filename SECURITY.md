@@ -39,7 +39,11 @@ tree to build a search index. ctx-gate:
 - **Never installs it automatically, on any OS, at any point** (see
   `src/core/init.js` / `src/mcp/codebaseMemoryClient.js`). `ctx-gate
   init` only checks whether it's already on PATH and prints manual
-  install instructions if it isn't.
+  install instructions if it isn't. `ctx-gate init` can, with explicit
+  `[y/N]` confirmation (a diff is shown first, same pattern as
+  `mcp-trim`), write the `.vscode/mcp.json` *config entry* naming the
+  server — this never fetches or runs the binary itself, which still
+  requires the manual install above.
 - Speaks to it only over local stdio JSON-RPC (`src/mcp/codebaseMemoryClient.js`)
   with a ~1.5s timeout that resolves to an empty result on any failure —
   never blocks, never crashes `ctx-gate check`.

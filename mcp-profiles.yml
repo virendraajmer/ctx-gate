@@ -1,7 +1,9 @@
 # Stack -> MCP server suggestions printed by `ctx-gate init` (see
-# src/core/init.js). Print-only: init never writes to a target repo's
-# .vscode/mcp.json and never installs anything, same as the existing
-# manual-guide-only rule for codebase-memory-mcp.
+# src/core/init.js). Printed only by default: init never writes to a target
+# repo's .vscode/mcp.json unless the developer explicitly opts in at the
+# interactive prompt (see bin/ctx-gate.js's `init` handler), and never
+# installs the underlying binary itself — that stays the existing
+# manual-guide-only rule for codebase-memory-mcp (SECURITY.md).
 base:
   - codebase-memory
 react:
@@ -10,3 +12,14 @@ dotnet:
   suggest: []
 python:
   suggest: []
+
+# Known mcp.json server entries for the names above, used only if the
+# developer opts in to writing them. A suggested name with no entry here is
+# skipped rather than guessed at (see mcpProfiles.js#buildAddProposal).
+servers:
+  codebase-memory:
+    command: codebase-memory-mcp
+    args: [mcp]
+  playwright:
+    command: npx
+    args: ["-y", "@playwright/mcp@latest"]
