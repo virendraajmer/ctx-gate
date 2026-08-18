@@ -1,6 +1,6 @@
 {
   "name": "ctx-gate",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Context optimizer and zero-LLM requirement gate for AI coding agents",
   "type": "commonjs",
   "bin": {
