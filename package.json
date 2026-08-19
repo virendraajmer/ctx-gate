@@ -1,6 +1,6 @@
 {
-  "name": "agent-context-gate",
-  "version": "0.1.4",
+  "name": "ctx-gate",
+  "version": "0.1.6",
   "description": "Context optimizer and zero-LLM requirement gate for AI coding agents",
   "type": "commonjs",
   "bin": {
@@ -25,8 +25,8 @@
     "test": "node --test \"tests/**/*.test.js\""
   },
   "dependencies": {
-    "gpt-tokenizer": "^2.1.2",
     "diff": "^5.2.0",
+    "gpt-tokenizer": "^2.1.2",
     "js-yaml": "^4.1.0"
   },
   "license": "MIT",

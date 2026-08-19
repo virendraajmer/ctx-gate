@@ -6,7 +6,7 @@ Context optimizer and zero-LLM requirement gate for AI coding agents
 (GitHub Copilot in VS Code today; designed to support other agent CLIs
 later — see [Architecture](#architecture)).
 
-ctx-gate has three capabilities in one tool:
+ctx-gate has four capabilities in one tool:
 
 - **Context Optimizer** (`ctx-gate optimize`) scans a target repo and
   writes token-budgeted context files that GitHub Copilot loads
@@ -28,6 +28,13 @@ ctx-gate has three capabilities in one tool:
   each phase of a task runs in its own fresh, small context instead of
   one long, expensive chat session. See
   [Agent Pack](#agent-pack) below.
+- **MCP Cost Audit** (`ctx-gate mcp-audit` / `mcp-trim` / `mcp-add`)
+  measures the real per-request token cost of every MCP server declared
+  in `.vscode/mcp.json` (their tool schemas are sent on every single
+  request), tracks which ones actually get used, and proposes a diff to
+  remove unused ones — measured with the real tokenizer, never estimated.
+  See
+  [MCP Cost Audit](#mcp-cost-audit-mcp-audit--mcp-trim--mcp-add) below.
 
 Each repo that installs ctx-gate keeps its own private memory under
 `.context-ops/` — memory is never shared across repos, only within a
@@ -113,6 +120,14 @@ after that — re-running `init` later doesn't rebuild it again). If it
 isn't on PATH, `init` prints manual install instructions and the command
 to index the repo yourself afterward — see
 [codebase-memory-mcp](#codebase-memory-mcp) below.
+
+`init` also prints MCP servers suggested for your detected stack (from
+`mcp-profiles.yml`) and, for any suggestion with a known command spec,
+offers to write its entry into `.vscode/mcp.json` — a diff is shown first
+and nothing is written without an explicit `y`. This never installs the
+underlying binary, only the config entry naming it (see
+[MCP Cost Audit](#mcp-cost-audit-mcp-audit--mcp-trim--mcp-add) below). If
+you say no, `ctx-gate mcp-add` runs the same flow again any time later.
 
 ### `ctx-gate configure [id] [value]`
 
@@ -211,6 +226,77 @@ instructions if it isn't found, and only auto-builds the index on a
 genuinely fresh `init` if it is found. Run `ctx-gate mcp-check` any time
 afterward to confirm it's still detected or to force a rebuild — its
 background watcher otherwise keeps the index fresh on its own.
+
+## MCP Cost Audit (`mcp-audit` / `mcp-trim` / `mcp-add`)
+
+Every enabled MCP server sends its full tool-definition schema with
+**every single request**, before you type anything — a workspace with
+four servers can be carrying 10,000+ tokens of definitions on every turn,
+including for servers nobody has called in a month. These three manual
+commands measure that cost and let you act on it; none of them block,
+deny, or otherwise change how MCP tool calls run — see
+[SECURITY.md](SECURITY.md) for why that's a deliberate boundary.
+
+### `ctx-gate mcp-audit`
+
+Starts every server declared in `.vscode/mcp.json`, calls `tools/list` on
+each, and measures the real token cost of its schema with the tokenizer
+in `src/tokenBudget.js` (never estimated). Combines that with local usage
+counts (tracked by the Requirement Gate's `learn` hook) into a table:
+
+```console
+$ ctx-gate mcp-audit
+Workspace servers (.vscode/mcp.json)
+
+  Server              Tools          Tokens/request   Used (30d)
+  ------------------------------------------------------------------
+  codebase-memory     15             2,180            412 calls
+  github              41             6,340              8 calls
+  playwright          24             3,910              0 calls
+  ------------------------------------------------------------------
+  Total               80             12,430
+
+  Every request in this workspace carries 12,430 tokens of tool
+  definitions before you type anything.
+
+  Unused in 30 days: playwright  ->  3,910 tokens/request
+  Run `ctx-gate mcp-trim` to see a proposed change.
+
+  Note: this covers repo-declared servers only. Servers enabled in your
+  personal VS Code profile load in every workspace and cannot be read or
+  changed by ctx-gate.
+```
+
+A server that can't be started (needs OAuth, missing binary, unreachable
+DB) is reported as `not measured`, never guessed at. Warns if the
+workspace total exceeds `mcp.warnAboveTokens`. Starts real processes, so
+it may take a few seconds — a manual command only, never run on a hook
+path.
+
+### `ctx-gate mcp-trim`
+
+Proposes removing servers unused for `mcp.unusedAfterDays` (default 30)
+from `.vscode/mcp.json`, showing a diff and the tokens each removal
+saves. Requires an explicit `y` before writing anything and never commits
+on your behalf. Refuses to recommend a server that's `not measured`
+(absence of a measurement is not evidence it's unused), and refuses to
+recommend anything at all for a server whose usage data doesn't cover the
+full window yet (e.g. installed a week ago) rather than guess from a
+short sample.
+
+### `ctx-gate mcp-add [name...]`
+
+Writes suggested MCP server entries into `.vscode/mcp.json` — the same
+confirm-then-write flow `init` offers inline, callable any time later
+(e.g. if you said no during `init`, or the stack changed since). With no
+arguments, it re-derives suggestions from the stored
+`.context-ops/manifest.json` (so `init` must have run at least once).
+Pass explicit names to add specific servers regardless of stack
+detection: `ctx-gate mcp-add codebase-memory playwright`. Servers already
+declared in `.vscode/mcp.json`, or with no known command spec in
+`mcp-profiles.yml`, are reported and skipped rather than guessed at. Like
+`init`, this only ever writes the config entry — it never installs the
+underlying binary.
 
 ### `ctx-gate enforce <off|warn|block>`
 
@@ -359,12 +445,13 @@ never centralized, never shared across repos.
 | `memory/standing.yml` | yes | Answers to the standing questions (what "done" means, high-risk paths, error-handling/naming/logging conventions) — confirmed by a human, or auto-detected where possible. |
 | `memory/glossary.yml` | yes | This repo's shared vocabulary — term, definition, and optional folder paths. `definition` renders into `CONTEXT.md`; `paths` is read directly by `check` to resolve a vague request locally, never sent to a model. |
 | `memory/learned.yml` | yes | Patterns promoted by `ctx-gate learn` once the same clarification has come up 3 times — starts empty. |
-| `config.yml` | yes | Team enforcement level + which agent adapter is active + session-warning thresholds + `agentPack.model`/`agentPack.commitArtifacts`. |
+| `config.yml` | yes | Team enforcement level + which agent adapter is active + session-warning thresholds + `agentPack.model`/`agentPack.commitArtifacts` + `mcp.audit`/`mcp.unusedAfterDays`/`mcp.warnAboveTokens` (see [MCP Cost Audit](#mcp-cost-audit-mcp-audit--mcp-trim--mcp-add)). |
 | `agent-pack.json` | yes | Hashes of the currently-installed Agent Pack files, written by `ctx-gate agents install`/`update` — lets `update` tell a local edit apart from a pack version change. |
 | `memory/answers.jsonl` | no (gitignored) | Raw append-only log every `learn` call writes to, used to compute promotion — not curated, so not committed. |
 | `config.local.yml` | no (gitignored) | Your personal enforcement override, written by `ctx-gate enforce <level>`. |
 | `logs/` | no (gitignored) | `ctx-gate.log` (hook errors) and `session-cache.json` (short-lived per-session state shared between `check`/`learn`/`enforce`, since each hook fires as a separate process) — ephemeral, derived, never curated memory. |
 | `state/<sessionId>.json` | no (gitignored) | Per-session cost snapshot (turn count, files read, estimated bytes read) written by `learn`, read by `check` for the [long-session warning](#long-session-cost-warning) and by `ctx-gate stats`. Pruned after 7 days. |
+| `state/mcp-usage.json` | no (gitignored) | Per-server MCP tool call counts (`{ "<server>": { "calls": N, "lastUsed": "<iso>" } }`), incremented by the `postToolUse` hook and read by `ctx-gate mcp-audit`/`mcp-trim`. |
 
 ## Architecture
 

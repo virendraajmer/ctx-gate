@@ -18,8 +18,10 @@ const {
   loadPackManifest,
   AGENT_FILES,
   HANDOFF_SKILL_FILE,
+  CODEBASE_MEMORY_SKILL_FILE,
   PACK_DIR,
   isHandoffInstalled,
+  isCodebaseMemorySkillInstalled,
 } = require('../../src/core/agentPack');
 
 function sha256(text) {
@@ -43,8 +45,8 @@ test('every file recorded in pack.json hash-matches the bundled file on disk', (
 test('install on a clean repo writes files byte-identical to the bundle (no substitution occurs)', () => {
   const dir = tmpRepo();
   try {
-    const { results } = install(dir);
-    assert.equal(results.length, AGENT_FILES.length + 1); // + the handoff skill, installed unconditionally
+    const { results } = install(dir, { mcpAvailable: true });
+    assert.equal(results.length, AGENT_FILES.length + 2); // + the handoff skill and the codebase-memory skill
     assert.ok(results.every((r) => r.status === 'written'));
 
     for (const filename of AGENT_FILES) {
@@ -123,11 +125,98 @@ test('update applies a safe (pack-only) change to the handoff skill', () => {
   }
 });
 
+// --- codebase-memory-mcp skill installation -------------------------------
+
+test('install skips the codebase-memory-mcp skill when the binary is not on PATH', () => {
+  const dir = tmpRepo();
+  try {
+    const { results } = install(dir, { mcpAvailable: false });
+    const cbm = results.find((r) => r.file === `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`);
+    assert.equal(cbm.status, 'skipped');
+    assert.ok(cbm.reason);
+    assert.equal(fs.existsSync(path.join(dir, '.github', 'skills', 'codebase-memory-mcp', 'SKILL.md')), false);
+    assert.equal(isCodebaseMemorySkillInstalled(dir), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('install writes the codebase-memory-mcp skill, byte-identical to the bundle, when the binary is available', () => {
+  const dir = tmpRepo();
+  try {
+    const { results } = install(dir, { mcpAvailable: true });
+    const cbm = results.find((r) => r.file === `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`);
+    assert.equal(cbm.status, 'written');
+
+    const installed = fs.readFileSync(path.join(dir, '.github', 'skills', 'codebase-memory-mcp', 'SKILL.md'), 'utf8');
+    const bundled = fs.readFileSync(path.join(PACK_DIR, 'codebase-memory-mcp', 'SKILL.md'), 'utf8');
+    assert.equal(installed, bundled);
+    assert.equal(isCodebaseMemorySkillInstalled(dir), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('install never overwrites a hand-edited codebase-memory-mcp skill — reports conflict with a diff', () => {
+  const dir = tmpRepo();
+  try {
+    const skillDir = path.join(dir, '.github', 'skills', 'codebase-memory-mcp');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# a hand-edited codebase-memory skill\n', 'utf8');
+
+    const { results } = install(dir, { mcpAvailable: true });
+    const cbm = results.find((r) => r.file === `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`);
+    assert.equal(cbm.status, 'conflict');
+    assert.match(cbm.diffText, /existing/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('update applies a safe (pack-only) change to the codebase-memory-mcp skill', () => {
+  const dir = tmpRepo();
+  try {
+    install(dir, { mcpAvailable: true });
+    const target = path.join(dir, '.github', 'skills', 'codebase-memory-mcp', 'SKILL.md');
+    const oldContent = '# old codebase-memory skill body\n';
+    fs.writeFileSync(target, oldContent, 'utf8');
+    const statePath = path.join(dir, '.context-ops', 'agent-pack.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.files[CODEBASE_MEMORY_SKILL_FILE] = sha256(oldContent);
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
+
+    const { results } = update(dir, { mcpAvailable: true });
+    const cbm = results.find((r) => r.file === `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`);
+    assert.equal(cbm.status, 'safe-to-apply');
+
+    const bundled = fs.readFileSync(path.join(PACK_DIR, 'codebase-memory-mcp', 'SKILL.md'), 'utf8');
+    assert.equal(fs.readFileSync(target, 'utf8'), bundled);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('update skips the codebase-memory-mcp skill when the binary is not on PATH, without touching an existing install', () => {
+  const dir = tmpRepo();
+  try {
+    install(dir, { mcpAvailable: true });
+    const target = path.join(dir, '.github', 'skills', 'codebase-memory-mcp', 'SKILL.md');
+    const before = fs.readFileSync(target, 'utf8');
+
+    const { results } = update(dir, { mcpAvailable: false });
+    const cbm = results.find((r) => r.file === `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`);
+    assert.equal(cbm.status, 'skipped');
+    assert.equal(fs.readFileSync(target, 'utf8'), before);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('install is idempotent: a second run reports unchanged for every file', () => {
   const dir = tmpRepo();
   try {
-    install(dir);
-    const { results } = install(dir);
+    install(dir, { mcpAvailable: true });
+    const { results } = install(dir, { mcpAvailable: true });
     assert.ok(results.every((r) => r.status === 'unchanged'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -244,8 +333,8 @@ test('classifyDrift covers all four update() categories plus missing', () => {
 test('update reports unchanged for every file right after a fresh install', () => {
   const dir = tmpRepo();
   try {
-    install(dir);
-    const { results } = update(dir);
+    install(dir, { mcpAvailable: true });
+    const { results } = update(dir, { mcpAvailable: true });
     assert.ok(results.every((r) => r.status === 'unchanged'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

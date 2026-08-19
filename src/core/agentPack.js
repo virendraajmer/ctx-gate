@@ -14,6 +14,7 @@ const { createTwoFilesPatch } = require('diff');
 
 const { countTokens } = require('../tokenBudget');
 const { resolveTestCommand } = require('./efficiencyBlock');
+const codebaseMemoryClient = require('../mcp/codebaseMemoryClient');
 
 const PACK_DIR = path.join(__dirname, '..', '..', 'agent-pack');
 const AGENT_FILES = ['planner.agent.md', 'implementer.agent.md', 'reviewer.agent.md', 'pipeline.agent.md'];
@@ -22,6 +23,12 @@ const GUIDELINES_FILE = 'agents.instructions.md';
 // file, so it installs alongside AGENT_FILES but is never scanned by
 // validate() below. See agent-pack/handoff/SKILL.md and addon-6 Part 3.
 const HANDOFF_SKILL_FILE = 'handoff/SKILL.md';
+// Same Copilot skill format, but only useful -- and only installed -- when
+// the codebase-memory-mcp binary is actually on PATH (see
+// src/mcp/codebaseMemoryClient.js#isAvailable). Unlike HANDOFF_SKILL_FILE
+// this one is conditional: install()/update() skip it entirely rather than
+// writing a skill file that points at a tool the repo doesn't have.
+const CODEBASE_MEMORY_SKILL_FILE = 'codebase-memory-mcp/SKILL.md';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'venv', '.venv', '__pycache__', 'bin', 'obj', 'dist', 'build']);
 
@@ -142,13 +149,16 @@ function diffText(targetLabel, existing, next) {
  * from what would be installed — reports a conflict with a diff instead.
  *
  * @param {string} repoRoot
- * @param {{ withGuidelines?: boolean }} [opts]
- * @returns {{ results: Array<{file: string, status: 'written'|'unchanged'|'conflict', diffText?: string, tokenCount?: number}> }}
+ * @param {{ withGuidelines?: boolean, mcpAvailable?: boolean }} [opts]
+ *   `mcpAvailable` overrides the codebase-memory-mcp PATH detection (tests only);
+ *   defaults to `codebaseMemoryClient.isAvailable()`.
+ * @returns {{ results: Array<{file: string, status: 'written'|'unchanged'|'conflict'|'skipped', diffText?: string, tokenCount?: number, reason?: string}> }}
  */
 function install(repoRoot, opts = {}) {
   const packManifest = loadPackManifest();
   const model = resolveModel(repoRoot);
   const testCommand = resolveTestCommandHint(repoRoot);
+  const mcpAvailable = opts.mcpAvailable != null ? opts.mcpAvailable : codebaseMemoryClient.isAvailable();
 
   const installedState = readInstalledState(repoRoot) || { version: packManifest.version, files: {} };
   const results = [];
@@ -204,6 +214,37 @@ function install(repoRoot, opts = {}) {
         });
       }
     }
+  }
+
+  if (mcpAvailable) {
+    const content = readPackFile(CODEBASE_MEMORY_SKILL_FILE);
+    const targetPath = path.join(targetSkillsDir(repoRoot), CODEBASE_MEMORY_SKILL_FILE);
+    const hash = sha256(content);
+
+    if (!fs.existsSync(targetPath)) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, content, 'utf8');
+      installedState.files[CODEBASE_MEMORY_SKILL_FILE] = hash;
+      results.push({ file: `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`, status: 'written' });
+    } else {
+      const existing = fs.readFileSync(targetPath, 'utf8');
+      if (existing === content) {
+        installedState.files[CODEBASE_MEMORY_SKILL_FILE] = hash;
+        results.push({ file: `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`, status: 'unchanged' });
+      } else {
+        results.push({
+          file: `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`,
+          status: 'conflict',
+          diffText: diffText(CODEBASE_MEMORY_SKILL_FILE, existing, content),
+        });
+      }
+    }
+  } else {
+    results.push({
+      file: `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`,
+      status: 'skipped',
+      reason: 'codebase-memory-mcp not found on PATH',
+    });
   }
 
   if (opts.withGuidelines) {
@@ -267,11 +308,15 @@ function classifyDrift({ recordedHash, currentHash, newHash }) {
  * reported but never written.
  *
  * @param {string} repoRoot
- * @returns {{ results: Array<{file: string, status: string, diffText?: string}> }}
+ * @param {{ mcpAvailable?: boolean }} [opts]
+ *   `mcpAvailable` overrides the codebase-memory-mcp PATH detection (tests only);
+ *   defaults to `codebaseMemoryClient.isAvailable()`.
+ * @returns {{ results: Array<{file: string, status: string, diffText?: string, reason?: string}> }}
  */
-function update(repoRoot) {
+function update(repoRoot, opts = {}) {
   const packManifest = loadPackManifest();
   const model = resolveModel(repoRoot);
+  const mcpAvailable = opts.mcpAvailable != null ? opts.mcpAvailable : codebaseMemoryClient.isAvailable();
   const testCommand = resolveTestCommandHint(repoRoot);
   const installedState = readInstalledState(repoRoot) || { version: null, files: {} };
 
@@ -334,6 +379,38 @@ function update(repoRoot) {
         results.push({ file: label, status, diffText: diffText(HANDOFF_SKILL_FILE, existing, content) });
       }
     }
+  }
+
+  if (mcpAvailable) {
+    const targetPath = path.join(targetSkillsDir(repoRoot), CODEBASE_MEMORY_SKILL_FILE);
+    const content = readPackFile(CODEBASE_MEMORY_SKILL_FILE);
+    const newHash = sha256(content);
+    const recordedHash = installedState.files[CODEBASE_MEMORY_SKILL_FILE];
+    const label = `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`;
+
+    if (!fs.existsSync(targetPath)) {
+      results.push({ file: label, status: classifyDrift({ recordedHash, currentHash: undefined, newHash }) });
+    } else {
+      const existing = fs.readFileSync(targetPath, 'utf8');
+      const currentHash = sha256(existing);
+      const status = classifyDrift({ recordedHash, currentHash, newHash });
+
+      if (status === 'unchanged') {
+        results.push({ file: label, status });
+      } else if (status === 'safe-to-apply') {
+        fs.writeFileSync(targetPath, content, 'utf8');
+        installedState.files[CODEBASE_MEMORY_SKILL_FILE] = newHash;
+        results.push({ file: label, status, diffText: diffText(CODEBASE_MEMORY_SKILL_FILE, existing, content) });
+      } else {
+        results.push({ file: label, status, diffText: diffText(CODEBASE_MEMORY_SKILL_FILE, existing, content) });
+      }
+    }
+  } else {
+    results.push({
+      file: `.github/skills/${CODEBASE_MEMORY_SKILL_FILE}`,
+      status: 'skipped',
+      reason: 'codebase-memory-mcp not found on PATH',
+    });
   }
 
   installedState.version = packManifest.version;
@@ -458,11 +535,20 @@ function isHandoffInstalled(repoRoot) {
   return fs.existsSync(path.join(targetSkillsDir(repoRoot), HANDOFF_SKILL_FILE));
 }
 
+/**
+ * @param {string} repoRoot
+ * @returns {boolean} true if the codebase-memory-mcp skill has been installed into this repo
+ */
+function isCodebaseMemorySkillInstalled(repoRoot) {
+  return fs.existsSync(path.join(targetSkillsDir(repoRoot), CODEBASE_MEMORY_SKILL_FILE));
+}
+
 module.exports = {
   PACK_DIR,
   AGENT_FILES,
   GUIDELINES_FILE,
   HANDOFF_SKILL_FILE,
+  CODEBASE_MEMORY_SKILL_FILE,
   loadPackManifest,
   renderAgentFile,
   resolveModel,
@@ -474,4 +560,5 @@ module.exports = {
   validateAgentFile,
   parseFrontmatter,
   isHandoffInstalled,
+  isCodebaseMemorySkillInstalled,
 };

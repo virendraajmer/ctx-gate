@@ -789,7 +789,8 @@ async function main(argv) {
             continue;
           }
           const tokenSuffix = r.tokenCount != null ? ` — ${r.tokenCount} tokens (measured)` : '';
-          process.stdout.write(`ctx-gate: ${r.file} — ${r.status}${tokenSuffix}\n`);
+          const reasonSuffix = r.reason ? ` (${r.reason})` : '';
+          process.stdout.write(`ctx-gate: ${r.file} — ${r.status}${tokenSuffix}${reasonSuffix}\n`);
         }
         if (!withGuidelines) {
           process.stdout.write('ctx-gate: authoring guidelines not installed — re-run with --with-guidelines to add .github/instructions/agents.instructions.md\n');
@@ -802,7 +803,8 @@ async function main(argv) {
         const { update } = require('../src/core/agentPack');
         const { results } = update(repoRoot);
         for (const r of results) {
-          process.stdout.write(`ctx-gate: ${r.file} — ${r.status}\n`);
+          const reasonSuffix = r.reason ? ` (${r.reason})` : '';
+          process.stdout.write(`ctx-gate: ${r.file} — ${r.status}${reasonSuffix}\n`);
           if (r.diffText) {
             process.stdout.write(`${r.diffText}\n`);
           }
